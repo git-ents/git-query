@@ -296,10 +296,10 @@ git query rules check review
 == Review vocabulary
 
 ----
-pub reviewed(B)
-pub unreviewed(Rev, B)
-pub unreviewed_line(Rev, Path, B, N)
-pub mergeable(Rev)
+pub reviewed(B).
+pub unreviewed(Rev, B).
+pub unreviewed_line(Rev, Path, B, N).
+pub mergeable(Rev).
 
 active_member(M) :- member(M), !revoked(M).
 review(C)        :- claim(C), kind(C, review).

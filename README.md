@@ -19,9 +19,9 @@ $ git query run blob --with unreviewed --in main..HEAD
 $ echo $?
 1                                     # no rows: nothing unreviewed on this range
 
-$ git query explain 'mergeable(HEAD)'
-mergeable(HEAD)
-└─ !blocked(HEAD)                     # negation witness
+$ git query explain 'mergeable("HEAD")'   # uppercase is a variable, so revs quote
+mergeable("HEAD")
+└─ !blocked("HEAD")                   # negation witness
 ```
 
 Exit codes follow grep: `0` rows, `1` none, `2` error — plus `3` for
