@@ -198,32 +198,31 @@ impl NemoTables {
 
 /// Render one rule as `head :- body .` or, for a fact, `head .`.
 fn render_rule(rule: &Rule) -> Result<String, EvalError> {
-    let mut anon = 0u32;
-    let head = render_atom(&rule.head, &mut anon)?;
+    let head = render_atom(&rule.head)?;
     if rule.body.is_empty() {
         return Ok(format!("{head} ."));
     }
     let mut parts = Vec::with_capacity(rule.body.len());
     for lit in &rule.body {
-        parts.push(render_literal(lit, &mut anon)?);
+        parts.push(render_literal(lit)?);
     }
     Ok(format!("{head} :- {} .", parts.join(", ")))
 }
 
-fn render_literal(lit: &Literal, anon: &mut u32) -> Result<String, EvalError> {
+fn render_literal(lit: &Literal) -> Result<String, EvalError> {
     Ok(match lit {
-        Literal::Positive(a) | Literal::Builtin(a) => render_atom(a, anon)?,
-        Literal::Negated(a) => format!("~{}", render_atom(a, anon)?),
+        Literal::Positive(a) | Literal::Builtin(a) => render_atom(a)?,
+        Literal::Negated(a) => format!("~{}", render_atom(a)?),
         Literal::Compare(c) => format!(
             "{} {} {}",
-            render_term(&c.left.term, anon)?,
+            render_term(&c.left.term)?,
             c.op.as_str(),
-            render_term(&c.right.term, anon)?,
+            render_term(&c.right.term)?,
         ),
     })
 }
 
-fn render_atom(atom: &Atom, anon: &mut u32) -> Result<String, EvalError> {
+fn render_atom(atom: &Atom) -> Result<String, EvalError> {
     let mut out = String::new();
     out.push_str(&atom.predicate.name);
     out.push('(');
@@ -231,7 +230,7 @@ fn render_atom(atom: &Atom, anon: &mut u32) -> Result<String, EvalError> {
         if i > 0 {
             out.push_str(", ");
         }
-        out.push_str(&render_term(&t.term, anon)?);
+        out.push_str(&render_term(&t.term)?);
     }
     out.push(')');
     Ok(out)
@@ -240,17 +239,19 @@ fn render_atom(atom: &Atom, anon: &mut u32) -> Result<String, EvalError> {
 /// Render one term. The only place a [`Term::Var`] becomes `?name` -- see the
 /// module doc for why that prefix is the single most important byte this
 /// crate emits.
-fn render_term(term: &Term, anon: &mut u32) -> Result<String, EvalError> {
+fn render_term(term: &Term) -> Result<String, EvalError> {
     Ok(match term {
         Term::Var(v) => format!("?{}", v.as_str()),
-        Term::Anon => {
-            // `_` occurs exactly once by construction, so any fresh name is
-            // semantically identical to leaving it anonymous -- and Nemo
-            // requires every variable to be named.
-            let name = format!("?__anon{anon}");
-            *anon += 1;
-            name
-        }
+        // Nemo has its own native anonymous-variable syntax: a bare `_`,
+        // with no name, parses as a fresh anonymous variable at every
+        // occurrence (`nemo::parser::ast::expression::basic::variable`'s
+        // `VariableType::Anonymous`, name optional). That is exactly our
+        // semantics -- `_` occurs exactly once by construction -- so no
+        // synthesized name is needed at all. A prior version minted
+        // `?__anon{n}`, which Nemo's own variable-name grammar rejects
+        // outright (a name must start with a letter, never `_`), so every
+        // rule containing an anonymous term failed at the emission audit.
+        Term::Anon => "_".to_owned(),
         Term::Const(v) => value_literal(v)?,
     })
 }
@@ -348,6 +349,23 @@ mod tests {
         ))
         .expect("renders");
         assert_eq!(text, "p(?X) :- q(?X), ~r(?X) .");
+    }
+
+    #[test]
+    fn an_anonymous_term_renders_as_nemos_own_bare_underscore() {
+        // Regression: a prior version minted `?__anon{n}`, a name Nemo's own
+        // variable grammar rejects (a name must start with a letter). Nemo's
+        // `_` is native syntax for exactly this, so no synthesized name is
+        // needed at all.
+        let text = render_rule(&Rule::new(
+            Atom::new("p", vec![Term::var("X")]),
+            vec![Literal::Positive(Atom::new(
+                "q",
+                vec![Term::var("X"), Term::Anon],
+            ))],
+        ))
+        .expect("renders");
+        assert_eq!(text, "p(?X) :- q(?X, _) .");
     }
 
     #[test]

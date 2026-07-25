@@ -41,6 +41,43 @@ fn every_symbol_we_emit_is_quoted_never_a_bare_identifier() {
 }
 
 #[test]
+fn an_anonymous_body_term_is_accepted_by_nemos_own_parser() {
+    // Regression: `crate::lower::render_term` once minted `?__anon{n}` for a
+    // `Term::Anon`, a name Nemo's own variable grammar rejects outright (a
+    // name must start with a letter). That made every rule with an
+    // anonymous argument -- which the reference vocabulary uses constantly
+    // -- fail at the emission audit. Nemo's own `_` is native syntax for
+    // exactly this case, so this pins the fix at the real-Nemo boundary
+    // rather than only at the renderer's own unit tests.
+    let mut program = Program::new();
+    program.push_rule(
+        Rule::fact(Atom::new("pair", vec![Term::sym("a"), Term::sym("b")])),
+        "conformance",
+    );
+    program.push_rule(
+        Rule::new(
+            Atom::new("out", vec![Term::var("X")]),
+            vec![Literal::Positive(Atom::new(
+                "pair",
+                vec![Term::var("X"), Term::Anon],
+            ))],
+        ),
+        "conformance",
+    );
+    let rewritten = RewrittenProgram {
+        rules: program,
+        demand: Vec::new(),
+        eager: std::collections::BTreeSet::new(),
+        answer: PredicateKey::new("out", 1),
+    };
+    let emitted = NemoProgram::emit(&rewritten).expect("emits");
+    emitted.audit().expect("audit passes");
+    let mut engine = run(&emitted, &NemoTables::new()).expect("nemo runs");
+    let rows = relation(&mut engine, &PredicateKey::new("out", 1)).expect("read back");
+    assert_eq!(rows, vec![vec![Value::sym("a")]]);
+}
+
+#[test]
 fn a_bare_identifier_written_directly_is_an_iri_not_a_symbol() {
     // Bypassing our own emitter to pin the underlying Nemo fact this crate
     // is built around: `carries(same).` is valid Nemo, and `same` lands in
