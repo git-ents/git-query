@@ -40,23 +40,33 @@ fn claim_refs(
     Ok(out)
 }
 
-/// The value of trailer `token` on `claim`'s commit message, if present.
-fn trailer_value(
+/// Every value of trailer `token` on `claim`'s commit message, in message
+/// order.
+///
+/// `kind/2`, `target/2`, `signer/2`, and `verdict/2` are all-free relations,
+/// and git parses a repeated trailer token happily -- `git interpret-trailers
+/// --parse` reports every `Target:` line on a commit with two of them, not
+/// just the first. Stopping at the first match here would make `RepoFacts`
+/// disagree with that oracle and, worse, disagree silently: a rejection
+/// naming two blobs would leave the second unrejected, `blocked/1` would not
+/// fire for it, and the gate would admit a rejected blob. Emitting one fact
+/// per occurrence keeps this predicate's extension exactly what git itself
+/// says the trailer block contains.
+fn trailer_values(
     repo: &gix::Repository,
     key: &PredicateKey,
     claim: ObjectId,
     token: &str,
-) -> Result<Option<String>, HostError> {
+) -> Result<Vec<String>, HostError> {
     let Ok(commit) = repo.find_commit(claim) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let decoded = commit.decode().map_err(|error| backend(key, error))?;
-    for trailer in decoded.message_trailers() {
-        if trailer.token.to_str().is_ok_and(|t| t == token) {
-            return Ok(Some(trailer.value.to_string()));
-        }
-    }
-    Ok(None)
+    Ok(decoded
+        .message_trailers()
+        .filter(|trailer| trailer.token.to_str().is_ok_and(|t| t == token))
+        .map(|trailer| trailer.value.to_string())
+        .collect())
 }
 
 pub(crate) fn claim_facts<'a>(
@@ -99,26 +109,25 @@ pub(crate) fn trailer_facts<'a>(
         if want_claim.is_some_and(|w| w != claim) {
             continue;
         }
-        let Some(text) = trailer_value(repo, key, claim, token)? else {
-            continue;
-        };
-        let value = if let Ok(oid) = ObjectId::from_hex(text.as_bytes()) {
-            // `target` and `signer` are oid-typed; round-tripping through the
-            // parsed oid rather than the raw trailer text keeps the emitted
-            // value canonical even if the trailer was hand-written in a
-            // different case.
-            sym_oid(oid)
-        } else {
-            Value::sym(text)
-        };
-        if want_value.as_ref().is_some_and(|want| want != &value) {
-            continue;
+        for text in trailer_values(repo, key, claim, token)? {
+            let value = if let Ok(oid) = ObjectId::from_hex(text.as_bytes()) {
+                // `target` and `signer` are oid-typed; round-tripping through
+                // the parsed oid rather than the raw trailer text keeps the
+                // emitted value canonical even if the trailer was
+                // hand-written in a different case.
+                sym_oid(oid)
+            } else {
+                Value::sym(text)
+            };
+            if want_value.as_ref().is_some_and(|want| want != &value) {
+                continue;
+            }
+            out.push(Ok(fact(
+                vec![sym_oid(claim), value],
+                Some(&name),
+                attribute,
+            )));
         }
-        out.push(Ok(fact(
-            vec![sym_oid(claim), value],
-            Some(&name),
-            attribute,
-        )));
     }
     Ok(Box::new(out.into_iter()))
 }
@@ -191,5 +200,66 @@ mod tests {
             .expect("ok");
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].values[0], Value::sym(id.as_str()));
+    }
+
+    /// A rejection naming two blobs -- two `Target:` trailers on one claim --
+    /// must produce two `target/2` tuples, or `rejected(B) :- review(C),
+    /// target(C,B), verdict(C,reject), ...` leaves the second blob
+    /// unrejected and a gate admits it. `git interpret-trailers --parse` is
+    /// the oracle: it is asked to parse the exact same message text, and
+    /// this test asserts `RepoFacts` reports exactly what git reports,
+    /// rather than trusting our own reading of "trailer".
+    #[test]
+    fn repeated_trailers_are_all_emitted_not_just_the_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        let blob_a = f.commit_file("a.txt", "a\n", "first");
+        let blob_b = f.hash_object("b");
+        let signer = f.hash_object("Alice <alice@example.com>");
+        let message = format!(
+            "review\n\nKind: review\nTarget: {blob_a}\nTarget: {blob_b}\nSigner: {signer}\nVerdict: reject\n"
+        );
+        let id = f.commit(&message);
+        f.update_ref(&format!("{CLAIMS_PREFIX}{id}"), &id);
+        let repo = f.open();
+
+        let target: Vec<_> = trailer_facts(
+            &repo,
+            &PredicateKey::new("target", 2),
+            &[Some(Value::sym(id.as_str())), None],
+            false,
+            "Target",
+        )
+        .expect("facts")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("ok");
+
+        let scratch = dir.path().join("message.txt");
+        std::fs::write(&scratch, &message).expect("write scratch message");
+        let git_out = f.git(&[
+            "interpret-trailers",
+            "--parse",
+            scratch.to_str().expect("utf-8 scratch path"),
+        ]);
+        let git_targets: Vec<&str> = git_out
+            .lines()
+            .filter_map(|l| l.strip_prefix("Target: "))
+            .collect();
+
+        assert_eq!(
+            git_targets.len(),
+            2,
+            "setup: git itself must see two Target: trailers"
+        );
+        assert_eq!(
+            target.len(),
+            git_targets.len(),
+            "RepoFacts must report exactly as many target/2 tuples as git \
+             interpret-trailers reports Target: trailers"
+        );
+        let ours: std::collections::BTreeSet<_> =
+            target.iter().map(|f| f.values[1].clone()).collect();
+        assert!(ours.contains(&Value::sym(blob_a.as_str())));
+        assert!(ours.contains(&Value::sym(blob_b.as_str())));
     }
 }
