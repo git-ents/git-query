@@ -11,7 +11,7 @@
 
 use gix::ObjectId;
 use gix::bstr::ByteSlice as _;
-use gix_query_ir::{Bindings, Facts, HostError, PredicateKey, Value};
+use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey, Value};
 
 use crate::util::{backend, backend_boxed, fact, parse_oid, sym_oid};
 
@@ -99,6 +99,29 @@ fn claim_refs(
     Ok(out)
 }
 
+/// `claim`'s own ref, by direct lookup rather than enumerating the whole
+/// namespace to find it.
+///
+/// A claim's identity *is* its ref's leaf (this module's own doc comment:
+/// "no separate mapping is kept"), so a bound claim never needs to scan
+/// every claim ref to confirm it exists -- `member.rs`'s `status` takes the
+/// same direct-lookup shape for a bound member. Without this, `target(+C,
+/// B)` inside the fixpoint reads every claim ref on every call, which is
+/// O(n) per call and O(n^2) over a query that revisits `C` for each
+/// candidate.
+fn claim_ref(
+    repo: &gix::Repository,
+    key: &PredicateKey,
+    claim: ObjectId,
+) -> Result<Option<String>, HostError> {
+    let refname = format!("{CLAIMS_PREFIX}{claim}");
+    let found = repo
+        .try_find_reference(&refname)
+        .map_err(|error| backend(key, error))?
+        .is_some();
+    Ok(found.then_some(refname))
+}
+
 /// Every value of trailer `token` on `claim`'s commit message, in message
 /// order.
 ///
@@ -134,16 +157,23 @@ pub(crate) fn claim_facts<'a>(
     bound: Bindings<'_>,
     attribute: bool,
 ) -> Result<Facts<'a>, HostError> {
-    let want = match bound.first() {
-        Some(Some(v)) => Some(parse_oid(key, v)?),
-        Some(None) | None => None,
-    };
-    let out: Vec<_> = claim_refs(repo, key)?
-        .into_iter()
-        .filter(|(_, id)| want.is_none_or(|w| w == *id))
-        .map(|(name, id)| Ok(fact(vec![sym_oid(id)], Some(&name), attribute)))
-        .collect();
-    Ok(Box::new(out.into_iter()))
+    match bound.first() {
+        Some(Some(v)) => {
+            let claim = parse_oid(key, v)?;
+            let out: Vec<Result<Fact, HostError>> = match claim_ref(repo, key, claim)? {
+                Some(name) => vec![Ok(fact(vec![sym_oid(claim)], Some(&name), attribute))],
+                None => vec![],
+            };
+            Ok(Box::new(out.into_iter()))
+        }
+        _ => {
+            let out: Vec<_> = claim_refs(repo, key)?
+                .into_iter()
+                .map(|(name, id)| Ok(fact(vec![sym_oid(id)], Some(&name), attribute)))
+                .collect();
+            Ok(Box::new(out.into_iter()))
+        }
+    }
 }
 
 /// `kind/2`, `target/2`, `signer/2`, and `verdict/2` share this shape: they
@@ -165,11 +195,15 @@ pub(crate) fn trailer_facts<'a>(
         Some(Some(v)) => Some(v.clone()),
         Some(None) | None => None,
     };
+    let claims: Vec<(String, ObjectId)> = match want_claim {
+        Some(claim) => claim_ref(repo, key, claim)?
+            .into_iter()
+            .map(|name| (name, claim))
+            .collect(),
+        None => claim_refs(repo, key)?,
+    };
     let mut out = Vec::new();
-    for (name, claim) in claim_refs(repo, key)? {
-        if want_claim.is_some_and(|w| w != claim) {
-            continue;
-        }
+    for (name, claim) in claims {
         for text in trailer_values(repo, key, claim, relation.token())? {
             let value = if relation.is_oid_shaped() {
                 match ObjectId::from_hex(text.as_bytes()) {
@@ -199,6 +233,51 @@ pub(crate) fn trailer_facts<'a>(
 mod tests {
     use super::*;
     use test_support::Fixture;
+
+    /// A bound claim is answered by a direct ref lookup rather than a scan
+    /// over the whole claims namespace -- with two claims present, binding
+    /// one must return only its own fact, and an unregistered claim oid must
+    /// answer empty rather than erroring, exactly like `member.rs`'s
+    /// `unknown_member_is_false_not_an_error`.
+    #[test]
+    fn a_bound_claim_is_a_direct_lookup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        let blob = f.commit_file("a.txt", "a\n", "first");
+        let signer = f.hash_object("Alice <alice@example.com>");
+        let one = claim(&f, &blob, &signer, "approve");
+        let two = claim(&f, &blob, &signer, "reject");
+        let repo = f.open();
+        let key = PredicateKey::new("claim", 1);
+
+        let out: Vec<_> = claim_facts(&repo, &key, &[Some(Value::sym(one.as_str()))], false)
+            .expect("facts")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ok");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].values[0], Value::sym(one.as_str()));
+
+        assert_ne!(one, two, "setup: the two claims must be distinct");
+
+        let stranger = f.hash_object("not a claim");
+        let out = claim_facts(&repo, &key, &[Some(Value::sym(stranger))], false)
+            .expect("facts")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ok");
+        assert!(out.is_empty());
+
+        let verdict: Vec<_> = trailer_facts(
+            &repo,
+            &PredicateKey::new("verdict", 2),
+            &[Some(Value::sym(one.as_str())), None],
+            false,
+        )
+        .expect("facts")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("ok");
+        assert_eq!(verdict.len(), 1);
+        assert_eq!(verdict[0].values[1], Value::sym("approve"));
+    }
 
     /// Commit a claim with the four trailers `claim.rs` reads, and point
     /// `refs/meta/claims/<message-derived-name>` at it. Returns the claim's
