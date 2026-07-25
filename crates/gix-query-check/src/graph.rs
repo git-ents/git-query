@@ -94,11 +94,22 @@ impl Sccs {
 }
 
 /// Tarjan's algorithm, iterative to avoid recursion-depth risk on a
-/// programmatically generated graph (the magic-set rewrite will produce
-/// exactly that in `gix-query-eval`, which reuses nothing from this crate
-/// but the same caution applies to why this is written iteratively rather
-/// than as the textbook recursive version).
+/// programmatically generated graph.
+///
+/// Children are visited **lazily**, one per iteration, through a cursor into
+/// the current node's edge list. The obvious alternative -- push a frame for
+/// every unvisited child at once -- is wrong, and wrong in a way that
+/// produces a plausible answer rather than a crash: between pushing a child's
+/// frame and popping it, a sibling's traversal may already have visited that
+/// child, and re-entering it overwrites its index, pushes it onto the stack a
+/// second time, and emits a spurious singleton component. Any node with two
+/// children where one reaches the other triggers it, which includes the
+/// reference vocabulary. A predicate then appears in two strata, mutual
+/// recursion stops looking mutual, and passes 5 and 9 are both defeated by
+/// adding one unrelated wrapper rule.
 pub(crate) fn tarjan(graph: &DepGraph) -> Sccs {
+    const NO_EDGES: &[Edge] = &[];
+
     struct State {
         index: BTreeMap<PredicateKey, usize>,
         lowlink: BTreeMap<PredicateKey, usize>,
@@ -108,10 +119,14 @@ pub(crate) fn tarjan(graph: &DepGraph) -> Sccs {
         components: Vec<Vec<PredicateKey>>,
     }
 
-    enum Frame<'a> {
-        Enter(&'a PredicateKey),
-        Finish(&'a PredicateKey),
-        AfterChild(&'a PredicateKey, &'a PredicateKey),
+    impl State {
+        fn enter(&mut self, v: &PredicateKey) {
+            self.index.insert(v.clone(), self.next_index);
+            self.lowlink.insert(v.clone(), self.next_index);
+            self.next_index += 1;
+            self.stack.push(v.clone());
+            self.on_stack.insert(v.clone(), true);
+        }
     }
 
     let mut st = State {
@@ -123,53 +138,54 @@ pub(crate) fn tarjan(graph: &DepGraph) -> Sccs {
         components: Vec::new(),
     };
 
+    let edges = |v: &PredicateKey| graph.get(v).map_or(NO_EDGES, Vec::as_slice);
+
     for start in graph.keys() {
         if st.index.contains_key(start) {
             continue;
         }
-        let mut work: Vec<Frame<'_>> = vec![Frame::Enter(start)];
-        while let Some(frame) = work.pop() {
-            match frame {
-                Frame::Enter(v) => {
-                    st.index.insert(v.clone(), st.next_index);
-                    st.lowlink.insert(v.clone(), st.next_index);
-                    st.next_index += 1;
-                    st.stack.push(v.clone());
-                    st.on_stack.insert(v.clone(), true);
-                    work.push(Frame::Finish(v));
-                    for edge in graph.get(v).into_iter().flatten() {
-                        let w = &edge.to;
-                        if !st.index.contains_key(w) {
-                            work.push(Frame::AfterChild(v, w));
-                            work.push(Frame::Enter(w));
-                        } else if st.on_stack.get(w).copied().unwrap_or(false) {
-                            let w_index = st.index[w];
-                            let v_low = st.lowlink[v];
-                            st.lowlink.insert(v.clone(), v_low.min(w_index));
-                        }
+        st.enter(start);
+        // Each entry is a node and how far through its edge list we are.
+        let mut work: Vec<(&PredicateKey, usize)> = vec![(start, 0)];
+        while let Some(&mut (v, ref mut cursor)) = work.last_mut() {
+            if let Some(edge) = edges(v).get(*cursor) {
+                *cursor += 1;
+                let w = &edge.to;
+                if st.index.contains_key(w) {
+                    // A cross edge into a finished component tells us nothing;
+                    // only an edge back into the component still being built
+                    // can lower this node's link.
+                    if st.on_stack.get(w).copied().unwrap_or(false) {
+                        let w_index = st.index[w];
+                        let v_low = st.lowlink[v];
+                        st.lowlink.insert(v.clone(), v_low.min(w_index));
+                    }
+                } else {
+                    st.enter(w);
+                    work.push((w, 0));
+                }
+                continue;
+            }
+
+            work.pop();
+            if let Some(&(parent, _)) = work.last() {
+                let v_low = st.lowlink[v];
+                let p_low = st.lowlink[parent];
+                st.lowlink.insert(parent.clone(), p_low.min(v_low));
+            }
+            if st.lowlink[v] == st.index[v] {
+                let mut component = Vec::new();
+                loop {
+                    let w = st.stack.pop().expect("v is still on the stack");
+                    st.on_stack.insert(w.clone(), false);
+                    let is_v = &w == v;
+                    component.push(w);
+                    if is_v {
+                        break;
                     }
                 }
-                Frame::AfterChild(v, w) => {
-                    let w_low = st.lowlink[w];
-                    let v_low = st.lowlink[v];
-                    st.lowlink.insert(v.clone(), v_low.min(w_low));
-                }
-                Frame::Finish(v) => {
-                    if st.lowlink[v] == st.index[v] {
-                        let mut component = Vec::new();
-                        loop {
-                            let w = st.stack.pop().expect("v is still on the stack");
-                            st.on_stack.insert(w.clone(), false);
-                            let is_v = &w == v;
-                            component.push(w);
-                            if is_v {
-                                break;
-                            }
-                        }
-                        component.sort();
-                        st.components.push(component);
-                    }
-                }
+                component.sort();
+                st.components.push(component);
             }
         }
     }
@@ -246,5 +262,38 @@ mod tests {
         };
         assert!(pos("c") < pos("b"));
         assert!(pos("b") < pos("a"));
+    }
+
+    /// The shape that broke the first implementation: a node with two
+    /// children where one is reachable from the other. Whichever child the
+    /// traversal takes first visits the other, and a version that queued both
+    /// children up front re-entered the second and emitted it twice.
+    #[test]
+    fn a_diamond_puts_every_predicate_in_exactly_one_component() {
+        let g = graph_of(&[("v", "a"), ("v", "b"), ("b", "a")]);
+        let sccs = tarjan(&g);
+        assert_eq!(sccs.members.len(), 3, "{:?}", sccs.members);
+        for k in ["v", "a", "b"] {
+            let appearances = sccs.members.iter().filter(|m| m.contains(&key(k))).count();
+            assert_eq!(appearances, 1, "{k} appears in {appearances} components");
+        }
+        assert!(!sccs.is_recursive(&key("a"), &g));
+    }
+
+    /// The same shape, but the reachable child is half of a real cycle. Here
+    /// the duplicate did not merely waste a round: it split the cycle, so a
+    /// mutually recursive pair stopped looking mutually recursive and the
+    /// negation check below it had nothing to fire on.
+    #[test]
+    fn a_cycle_stays_one_component_when_an_unrelated_wrapper_points_at_both() {
+        let g = graph_of(&[("p", "q"), ("p", "r"), ("q", "r"), ("r", "q")]);
+        let sccs = tarjan(&g);
+        assert_eq!(
+            sccs.of(&key("q")),
+            sccs.of(&key("r")),
+            "the wrapper split the cycle"
+        );
+        assert!(sccs.is_recursive(&key("q"), &g));
+        assert_ne!(sccs.of(&key("p")), sccs.of(&key("q")));
     }
 }

@@ -58,8 +58,18 @@ fn assign_strata(sccs: &Sccs, graph: &DepGraph) -> Stratification {
         let mut stratum = 0usize;
         for key in &sccs.members[idx] {
             for edge in graph.get(key).into_iter().flatten() {
-                if let Some(dep_idx) = sccs.of(&edge.to) {
-                    stratum = stratum.max(stratum_of_component[dep_idx] + 1);
+                match sccs.of(&edge.to) {
+                    // An edge inside the component is recursion, not a
+                    // dependency: the component is evaluated to a fixpoint as
+                    // one unit. Counting it would push a self-recursive
+                    // predicate with nothing beneath it into stratum 1 and
+                    // leave stratum 0 empty -- a round the evaluator would
+                    // run over no rules, and a representable state the
+                    // stratification has no meaning for.
+                    Some(dep_idx) if dep_idx != idx => {
+                        stratum = stratum.max(stratum_of_component[dep_idx] + 1);
+                    }
+                    Some(_) | None => {}
                 }
             }
         }
@@ -139,6 +149,105 @@ mod tests {
             errors[0],
             CheckError::UnstratifiableNegation { .. }
         ));
+    }
+
+    /// The non-degenerate case: two predicates, mutually recursive, with the
+    /// negation running between them rather than from one to itself. An
+    /// unrelated wrapper points at both, which is what defeated the first SCC
+    /// implementation -- it split the pair into two components, so nothing
+    /// looked mutually recursive and this program was accepted.
+    #[test]
+    fn a_two_predicate_negation_cycle_is_rejected_even_behind_a_wrapper() {
+        use gix_query_ir::Literal::{Negated, Positive};
+
+        let mut program = Program::new();
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("p", vec![Term::var("X")]),
+                vec![
+                    Positive(Atom::new("q", vec![Term::var("X")])),
+                    Positive(Atom::new("r", vec![Term::var("X")])),
+                ],
+            ),
+            "m",
+        );
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("q", vec![Term::var("X")]),
+                vec![
+                    Positive(Atom::new("s", vec![Term::var("X")])),
+                    Negated(Atom::new("r", vec![Term::var("X")])),
+                ],
+            ),
+            "m",
+        );
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("r", vec![Term::var("X")]),
+                vec![Positive(Atom::new("q", vec![Term::var("X")]))],
+            ),
+            "m",
+        );
+        crate::testutil::add(&mut program, fact_rule("s", "a"), "m");
+
+        let mut build_errors = Errors::new();
+        let registry = crate::registry_build::build(&program, &Registry::host(), &mut build_errors);
+        let mut errors = Errors::new();
+        let out = check(&program, &registry, &mut errors);
+
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].pass(), Pass::Stratification);
+        // And regardless of the verdict, no predicate may land in two strata:
+        // the evaluator would run it twice and negation would read a relation
+        // that is complete in one round and not the other.
+        let mut seen = std::collections::BTreeSet::new();
+        for stratum in out.stratification.strata() {
+            for key in stratum {
+                assert!(seen.insert(key.clone()), "{key} appears in two strata");
+            }
+        }
+    }
+
+    /// A self-recursive predicate over a host relation depends on nothing we
+    /// evaluate, so it belongs in the first stratum. Counting its own
+    /// recursion as a dependency left stratum 0 empty.
+    #[test]
+    fn a_self_recursive_predicate_alone_occupies_the_first_stratum() {
+        use gix_query_ir::Literal::Positive;
+
+        let mut program = Program::new();
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("reach", vec![Term::var("R"), Term::var("R")]),
+                vec![Positive(Atom::new("commit", vec![Term::var("R")]))],
+            ),
+            "m",
+        );
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("reach", vec![Term::var("R"), Term::var("C")]),
+                vec![
+                    Positive(Atom::new("reach", vec![Term::var("R"), Term::var("X")])),
+                    Positive(Atom::new("parent", vec![Term::var("X"), Term::var("C")])),
+                ],
+            ),
+            "m",
+        );
+
+        let mut build_errors = Errors::new();
+        let registry = crate::registry_build::build(&program, &Registry::host(), &mut build_errors);
+        let mut errors = Errors::new();
+        let out = check(&program, &registry, &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let strata = out.stratification.strata();
+        assert_eq!(strata.len(), 1, "{strata:?}");
+        assert!(!strata[0].is_empty());
     }
 
     #[test]
