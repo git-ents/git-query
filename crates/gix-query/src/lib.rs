@@ -1,17 +1,19 @@
 //! A Datalog query and rules layer over git.
 //!
-//! [`run_goal`] is the facade for tier 3: parse a goal, resolve it against
-//! the host registry, validate it, magic-set rewrite it, lower it to Nemo,
-//! audit the emission, and run it to a demand fixpoint against a real
-//! repository. No rule module is loaded, so a goal can only call bare host
-//! predicates and builtins -- `gix-query-rules` is not wired in yet.
+//! [`checked_program`] assembles the whole program -- every rule module
+//! [`gix_query_rules::RuleStore`] currently publishes, parsed, qualified, and
+//! validated together -- and [`run_goal`] is the facade for tier 3 against
+//! it: parse a goal, resolve it against the host registry, validate it,
+//! magic-set rewrite it, lower it to Nemo, audit the emission, and run it to
+//! a demand fixpoint against a real repository.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 use gix_query_host::{AllBuiltins, RepoFacts};
-use gix_query_ir::{Program, Registry, Value};
+use gix_query_ir::{CheckedProgram, Registry, Value};
 
 pub use gix_query_ir::Registry as HostRegistry;
+pub use gix_query_rules::RuleStore;
 
 /// Join a list of diagnostics into one message, one per line.
 fn join<E: std::fmt::Display>(errors: &[E]) -> String {
@@ -28,12 +30,10 @@ pub enum QueryError {
     /// The goal failed to parse.
     #[error("goal did not parse:\n{0}")]
     Parse(String),
-    /// The (empty) program failed validation. Unreachable in practice, since
-    /// [`run_goal`] checks no rules -- kept as a distinct variant so a future
-    /// caller that does load rule modules gets a precise error rather than
-    /// this crate having to guess which check produced it.
-    #[error("program failed validation:\n{0}")]
-    CheckProgram(String),
+    /// Loading or assembling the stored rule modules failed -- storage, a
+    /// module's own syntax, or the whole program's own validation.
+    #[error(transparent)]
+    Rules(#[from] gix_query_rules::Error),
     /// The goal itself failed validation against the checked program.
     #[error("goal failed validation:\n{0}")]
     CheckGoal(String),
@@ -43,14 +43,31 @@ pub enum QueryError {
     Eval(#[from] gix_query_eval::EvalError),
 }
 
+/// Assemble the whole program: every rule module currently published at
+/// `refs/meta/rules/*` in `repo`, parsed, qualified into one namespace, and
+/// checked together against the host registry.
+///
+/// A repository with no rule modules produces an empty, trivially valid
+/// program, so a goal can still call bare host predicates and builtins with
+/// no rules published at all.
+///
+/// # Errors
+/// See [`gix_query_rules::Error`].
+pub fn checked_program(repo: &gix::Repository) -> Result<CheckedProgram, QueryError> {
+    let registry = Registry::host();
+    let store = RuleStore::open(repo)?;
+    Ok(gix_query_rules::assemble(&store, &registry)?)
+}
+
 /// Parse `goal_text`, projecting `select`, and run it against `repo`.
 ///
-/// No rule module is loaded: the only predicates a goal can call are the
-/// host EDB relations and builtins `gix_query_ir::Registry::host` declares.
-/// Rows come back in `select`'s column order, deduplicated -- Datalog's
-/// answer relation is a set, and the demand loop's final round already
-/// dedups internally, but a caller composing several partial runs should
-/// not have to re-derive that guarantee.
+/// Assembles [`checked_program`] first, so a goal may call any `pub`
+/// predicate any currently published rule module defines, in addition to
+/// the host EDB relations and builtins `gix_query_ir::Registry::host`
+/// declares. Rows come back in `select`'s column order, deduplicated --
+/// Datalog's answer relation is a set, and the demand loop's final round
+/// already dedups internally, but a caller composing several partial runs
+/// should not have to re-derive that guarantee.
 ///
 /// # Errors
 /// See [`QueryError`].
@@ -59,14 +76,12 @@ pub fn run_goal(
     goal_text: &str,
     select: &[&str],
 ) -> Result<Vec<Vec<Value>>, QueryError> {
-    let registry = Registry::host();
+    let checked = checked_program(repo)?;
 
     let mut goal = gix_query_parse::parse_goal_with_select(goal_text, select)
         .map_err(|e| QueryError::Parse(join(&e)))?;
-    gix_query_parse::resolve_goal(&mut goal, &registry);
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    let checked = gix_query_check::check(&Program::new(), &registry)
-        .map_err(|e| QueryError::CheckProgram(join(&e)))?;
     gix_query_check::check_goal(&goal, &checked).map_err(|e| QueryError::CheckGoal(join(&e)))?;
 
     let rewritten = gix_query_eval::rewrite_program(&checked, &goal);

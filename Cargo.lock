@@ -1761,6 +1761,9 @@ name = "gix-query-rules"
 version = "0.1.0"
 dependencies = [
  "facet",
+ "facet-format",
+ "facet-git-tree 0.1.0",
+ "facet-value",
  "gix",
  "gix-query-check",
  "gix-query-ir",

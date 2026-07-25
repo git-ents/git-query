@@ -10,6 +10,9 @@ gix-query-ir = { path = "../gix-query-ir" }
 gix-query-parse = { path = "../gix-query-parse" }
 gix-query-check = { path = "../gix-query-check" }
 gix-store = { path = "../../../git-store/crates/gix-store" }
+facet-git-tree = { path = "../../../git-store/crates/facet-git-tree" }
+facet-value = "0.50.0-rc.5"
+facet-format = "0.50.0-rc.5"
 gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
 facet = { version = "0.50.0-rc.0", features = ["reflect"] }
 thiserror = "2"
