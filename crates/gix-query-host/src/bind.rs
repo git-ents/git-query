@@ -36,9 +36,39 @@ impl<'r> RepoBuiltins<'r> {
     }
 }
 
+/// Which of the two projection builtins `key` names, or neither.
+///
+/// Parsed once per call and matched exhaustively, rather than the arity check
+/// living in `provides` and a separate `== "bind_fuzzy"` string comparison
+/// living in `call`: the two used to be able to disagree, and a `call` that
+/// only inspects "is this fuzzy" (never "is this one of mine at all") runs
+/// *any* arity-7 key with exact-projection semantics, including ones
+/// `provides` itself would refuse. [`gix_query_ir::Comparisons::call`] gets
+/// this right with `ok_or_else(NoProvider)`; this mirrors it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    /// `bind`, backed by `project_candidates` (the `project_exact` family).
+    Exact,
+    /// `bind_fuzzy`, backed by `project_from_context`.
+    Fuzzy,
+}
+
+impl Entry {
+    fn of(key: &PredicateKey) -> Option<Self> {
+        if key.arity != 7 {
+            return None;
+        }
+        match key.name.as_ref() {
+            "bind" => Some(Self::Exact),
+            "bind_fuzzy" => Some(Self::Fuzzy),
+            _ => None,
+        }
+    }
+}
+
 impl Builtin for RepoBuiltins<'_> {
     fn provides(&self, key: &PredicateKey) -> bool {
-        key.arity == 7 && matches!(key.name.as_ref(), "bind" | "bind_fuzzy")
+        Entry::of(key).is_some()
     }
 
     fn call(
@@ -47,7 +77,7 @@ impl Builtin for RepoBuiltins<'_> {
         bound: Bindings<'_>,
         out: &mut Vec<Vec<Value>>,
     ) -> Result<(), HostError> {
-        let fuzzy = key.name.as_ref() == "bind_fuzzy";
+        let entry = Entry::of(key).ok_or_else(|| HostError::NoProvider(key.clone()))?;
         let (Some(Some(anchor_v)), Some(Some(rev_v))) = (bound.first(), bound.get(1)) else {
             return Err(HostError::UnsupportedMode { key: key.clone() });
         };
@@ -63,14 +93,13 @@ impl Builtin for RepoBuiltins<'_> {
         let target_tree = target_commit.tree().map_err(|error| backend(key, error))?;
         let rev_text = rev_oid.to_string();
 
-        let projections = if fuzzy {
-            match gix_anchor::project_from_context(self.repo, &anchor, &rev_text) {
+        let projections = match entry {
+            Entry::Fuzzy => match gix_anchor::project_from_context(self.repo, &anchor, &rev_text) {
                 Ok(projection) => vec![projection],
                 Err(error) => return Err(backend(key, error)),
-            }
-        } else {
-            gix_anchor::project_candidates(self.repo, &anchor, &rev_text)
-                .map_err(|error| backend(key, error))?
+            },
+            Entry::Exact => gix_anchor::project_candidates(self.repo, &anchor, &rev_text)
+                .map_err(|error| backend(key, error))?,
         };
 
         for projection in &projections {
@@ -224,6 +253,29 @@ mod tests {
             None,
             None,
         ]
+    }
+
+    /// `provides` refuses an arity-7 key that is neither `bind` nor
+    /// `bind_fuzzy`; `call` must refuse the same key rather than silently
+    /// running it with exact-projection semantics, which is what the old
+    /// `key.name.as_ref() == "bind_fuzzy"` check (never checking membership
+    /// at all) let through.
+    #[test]
+    fn call_refuses_a_key_provides_would_also_refuse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.commit_file("a.txt", "a\n", "first");
+        let repo = f.open();
+
+        let key = PredicateKey::new("bind_other", 7);
+        let builtins = RepoBuiltins::new(&repo);
+        assert!(!builtins.provides(&key));
+
+        let mut out = Vec::new();
+        let err = builtins
+            .call(&key, &bind_args("00", "00"), &mut out)
+            .expect_err("call must refuse a key provides refuses");
+        assert!(matches!(err, HostError::NoProvider(_)));
     }
 
     fn attach_position(repo: &gix::Repository, anchor: Anchor) -> ObjectId {
@@ -607,5 +659,34 @@ mod tests {
         // maintenance ran.
         assert_eq!(out[0][5], Value::sym("lost"));
         assert_eq!(out[0][6], Value::sym("none"));
+    }
+
+    /// The registry's `bind`/`bind_fuzzy` `version` and
+    /// `gix_anchor::PROJECTION_HEURISTIC_VERSION` are two constants declaring
+    /// the same fact -- the implementation version of the rename-detection
+    /// and hunk-mapping heuristics `bind` wraps -- and `gix-query-host` is
+    /// the only crate in the workspace that can see both at once. Without
+    /// this check they can silently drift: an upstream heuristic change that
+    /// bumps `PROJECTION_HEURISTIC_VERSION` with no matching bump in
+    /// `gix_query_ir`'s registry would leave the builtin registry digest (and
+    /// therefore the cache key, `query-and-rules.adoc` section 1.6) unmoved,
+    /// serving every cached `reviewed_span` computed under the old heuristic
+    /// unchanged. `gix_query_ir` is frozen from this crate's side, so a
+    /// divergence caught here can only be fixed upstream in the registry.
+    #[test]
+    fn bind_version_tracks_the_projection_heuristic_it_wraps() {
+        let registry = gix_query_ir::Registry::host();
+        for name in ["bind", "bind_fuzzy"] {
+            let entry = registry
+                .builtin(&PredicateKey::new(name, 7))
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            assert_eq!(
+                entry.props.version,
+                gix_anchor::PROJECTION_HEURISTIC_VERSION,
+                "{name}'s registered version has drifted from \
+                 gix_anchor::PROJECTION_HEURISTIC_VERSION; bump the registry \
+                 constant in gix-query-ir to match"
+            );
+        }
     }
 }
