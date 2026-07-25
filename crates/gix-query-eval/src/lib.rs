@@ -49,3 +49,13 @@
 //!   Both are filled from our own rewrite, above the lowering.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+
+mod error;
+mod rewrite;
+mod symbol;
+
+pub use error::EvalError;
+pub use rewrite::{
+    DemandKind, DemandSite, RewrittenProgram, adorn_body, rewrite as rewrite_program,
+};
+pub use symbol::Symbol;

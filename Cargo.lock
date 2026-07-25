@@ -1702,7 +1702,6 @@ name = "gix-query-eval"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "gix-query-check",
  "gix-query-ir",
  "gix-query-parse",
  "nemo",
