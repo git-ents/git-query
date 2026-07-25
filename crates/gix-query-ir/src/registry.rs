@@ -630,7 +630,15 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
             "anchor",
             &[Oid],
             enumerable_or_test1,
-            vec![RefGlob("refs/anchors/*".into())],
+            // Two components, not one: `gix_anchor::Store` writes
+            // `refs/anchors/<target>/<binding>`, and under git's glob
+            // semantics `*` stops at a slash, so a single-star pattern here
+            // matches nothing at all. That is not a cosmetic error -- the
+            // footprint digest is the glob patterns plus the `(refname, oid)`
+            // pairs they match, so an empty match set means capturing or
+            // removing an anchor leaves the digest unchanged and a cached
+            // answer outlives the namespace it depended on.
+            vec![RefGlob("refs/anchors/**".into())],
             "an immutable identity whose location is derived",
         ),
         edb(
