@@ -215,6 +215,19 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap_or_else(|e| panic!("{}: {e}", entry.key));
 
+            assert!(
+                !rows.is_empty(),
+                "{}: setup should have left at least one fact to attribute",
+                entry.key
+            );
+
+            // The fixture's own refs -- the same shape and order the
+            // footprint digest consumes -- so attribution is checked against
+            // a ref git itself confirms exists, not merely against a glob
+            // pattern. Every test elsewhere in this crate passes
+            // `attribute: false`, which leaves `refname()` construction
+            // entirely unexercised; this is the one place it runs.
+            let real_refs = f.refs();
             for row in &rows {
                 let source_ref = row.source_ref.as_deref().unwrap_or_else(|| {
                     panic!(
@@ -222,6 +235,12 @@ mod tests {
                         entry.key
                     )
                 });
+                assert!(
+                    real_refs.iter().any(|(name, _)| name == source_ref),
+                    "{}'s emitted source_ref {source_ref} is not a ref \
+                     Fixture::refs() reports the fixture actually has",
+                    entry.key
+                );
                 let matched = globs.iter().any(|glob| {
                     f.git(&["for-each-ref", "--format=%(refname)", glob])
                         .lines()
