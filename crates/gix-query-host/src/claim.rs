@@ -17,6 +17,65 @@ use crate::util::{backend, backend_boxed, fact, parse_oid, sym_oid};
 
 const CLAIMS_PREFIX: &str = "refs/meta/claims/";
 
+/// One claim-attached two-place relation: its trailer token and its declared
+/// column type, traveling together rather than being re-derived per value.
+///
+/// The registry declares each precisely -- `kind: Symbol`, `target: Oid`,
+/// `signer: Member`, `verdict: Symbol` (`gix_query_ir::host_predicates`) --
+/// but the value column used to be typed by *guessing from its shape*,
+/// trying `ObjectId::from_hex` on every trailer regardless of which relation
+/// it belonged to. That guess is silently wrong in both directions: a
+/// `Signer:` written as a bare email fails the parse and falls through as an
+/// opaque symbol with no diagnostic that it was never a member id, and a
+/// `Verdict:` that happened to look like 40 hex characters would be
+/// "canonicalized" through an oid parse for a column that was never oid-typed
+/// to begin with. Deriving [`TrailerRelation`] from the predicate key once,
+/// here, is what makes the column type a fact about the relation rather than
+/// a property inferred anew from every value it happens to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrailerRelation {
+    /// `kind/2`, `Symbol`-typed.
+    Kind,
+    /// `target/2`, `Oid`-typed.
+    Target,
+    /// `signer/2`, `Member`-typed (the same hex wire shape as `Oid`).
+    Signer,
+    /// `verdict/2`, `Symbol`-typed.
+    Verdict,
+}
+
+impl TrailerRelation {
+    fn of(key: &PredicateKey) -> Option<Self> {
+        if key.arity != 2 {
+            return None;
+        }
+        match key.name.as_ref() {
+            "kind" => Some(Self::Kind),
+            "target" => Some(Self::Target),
+            "signer" => Some(Self::Signer),
+            "verdict" => Some(Self::Verdict),
+            _ => None,
+        }
+    }
+
+    /// The commit-message trailer token this relation reads.
+    fn token(self) -> &'static str {
+        match self {
+            Self::Kind => "Kind",
+            Self::Target => "Target",
+            Self::Signer => "Signer",
+            Self::Verdict => "Verdict",
+        }
+    }
+
+    /// Whether this relation's value column is declared `Oid`- or
+    /// `Member`-typed, and should therefore be canonicalized through a hex
+    /// parse rather than passed through as a bare symbol.
+    fn is_oid_shaped(self) -> bool {
+        matches!(self, Self::Target | Self::Signer)
+    }
+}
+
 /// Every claim ref's `(refname, claim oid)` pair, sorted by refname.
 fn claim_refs(
     repo: &gix::Repository,
@@ -87,15 +146,17 @@ pub(crate) fn claim_facts<'a>(
     Ok(Box::new(out.into_iter()))
 }
 
-/// `kind/2`, `target/2`, `signer/2`, and `verdict/2` share this shape:
-/// they differ only in which trailer token they read.
+/// `kind/2`, `target/2`, `signer/2`, and `verdict/2` share this shape: they
+/// differ only in which [`TrailerRelation`] `key` names, derived once here
+/// rather than threaded in by each caller in `facts.rs` as a separate string
+/// that could name a different token than `key` itself does.
 pub(crate) fn trailer_facts<'a>(
     repo: &'a gix::Repository,
     key: &PredicateKey,
     bound: Bindings<'_>,
     attribute: bool,
-    token: &'static str,
 ) -> Result<Facts<'a>, HostError> {
+    let relation = TrailerRelation::of(key).ok_or_else(|| HostError::NoProvider(key.clone()))?;
     let want_claim = match bound.first() {
         Some(Some(v)) => Some(parse_oid(key, v)?),
         Some(None) | None => None,
@@ -109,13 +170,15 @@ pub(crate) fn trailer_facts<'a>(
         if want_claim.is_some_and(|w| w != claim) {
             continue;
         }
-        for text in trailer_values(repo, key, claim, token)? {
-            let value = if let Ok(oid) = ObjectId::from_hex(text.as_bytes()) {
-                // `target` and `signer` are oid-typed; round-tripping through
-                // the parsed oid rather than the raw trailer text keeps the
-                // emitted value canonical even if the trailer was
-                // hand-written in a different case.
-                sym_oid(oid)
+        for text in trailer_values(repo, key, claim, relation.token())? {
+            let value = if relation.is_oid_shaped() {
+                match ObjectId::from_hex(text.as_bytes()) {
+                    // Round-tripping through the parsed oid rather than the
+                    // raw trailer text keeps the emitted value canonical even
+                    // if the trailer was hand-written in a different case.
+                    Ok(oid) => sym_oid(oid),
+                    Err(_) => Value::sym(text),
+                }
             } else {
                 Value::sym(text)
             };
@@ -163,7 +226,6 @@ mod tests {
             &PredicateKey::new("kind", 2),
             &[Some(Value::sym(id.as_str())), None],
             false,
-            "Kind",
         )
         .expect("facts")
         .collect::<Result<Vec<_>, _>>()
@@ -175,7 +237,6 @@ mod tests {
             &PredicateKey::new("target", 2),
             &[Some(Value::sym(id.as_str())), None],
             false,
-            "Target",
         )
         .expect("facts")
         .collect::<Result<Vec<_>, _>>()
@@ -187,7 +248,6 @@ mod tests {
             &PredicateKey::new("verdict", 2),
             &[Some(Value::sym(id.as_str())), Some(Value::sym("approve"))],
             false,
-            "Verdict",
         )
         .expect("facts")
         .collect::<Result<Vec<_>, _>>()
@@ -228,7 +288,6 @@ mod tests {
             &PredicateKey::new("target", 2),
             &[Some(Value::sym(id.as_str())), None],
             false,
-            "Target",
         )
         .expect("facts")
         .collect::<Result<Vec<_>, _>>()
@@ -261,5 +320,65 @@ mod tests {
             target.iter().map(|f| f.values[1].clone()).collect();
         assert!(ours.contains(&Value::sym(blob_a.as_str())));
         assert!(ours.contains(&Value::sym(blob_b.as_str())));
+    }
+
+    /// The column type is declared per relation, not guessed from a value's
+    /// shape: a `Kind:` trailer that happens to look like 40 hex characters
+    /// must come back byte-for-byte rather than being round-tripped through
+    /// an oid parse, because `kind/2` is `Symbol`-typed regardless of what
+    /// any particular value looks like.
+    #[test]
+    fn symbol_typed_columns_are_never_treated_as_oids_even_if_hex_shaped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        let blob = f.commit_file("a.txt", "a\n", "first");
+        let signer = f.hash_object("Alice <alice@example.com>");
+        let hex_looking = "a".repeat(40);
+        let message = format!(
+            "review\n\nKind: {hex_looking}\nTarget: {blob}\nSigner: {signer}\nVerdict: {hex_looking}\n"
+        );
+        let id = f.commit(&message);
+        f.update_ref(&format!("{CLAIMS_PREFIX}{id}"), &id);
+        let repo = f.open();
+
+        let kind: Vec<_> = trailer_facts(
+            &repo,
+            &PredicateKey::new("kind", 2),
+            &[Some(Value::sym(id.as_str())), None],
+            false,
+        )
+        .expect("facts")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("ok");
+        assert_eq!(kind[0].values[1], Value::sym(hex_looking.as_str()));
+    }
+
+    /// The bound-path manifestation finding 7 names directly: a `Signer:`
+    /// trailer written as a bare email is not oid-shaped, so it falls
+    /// through as a plain symbol rather than being silently dropped -- the
+    /// fact still exists, ready for `member(+M)` to answer "no such member"
+    /// on it (`member.rs`'s own lenient bound-path parsing).
+    #[test]
+    fn signer_written_as_an_email_still_produces_a_fact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        let blob = f.commit_file("a.txt", "a\n", "first");
+        let message = format!(
+            "review\n\nKind: review\nTarget: {blob}\nSigner: alice@example.com\nVerdict: approve\n"
+        );
+        let id = f.commit(&message);
+        f.update_ref(&format!("{CLAIMS_PREFIX}{id}"), &id);
+        let repo = f.open();
+
+        let signer: Vec<_> = trailer_facts(
+            &repo,
+            &PredicateKey::new("signer", 2),
+            &[Some(Value::sym(id.as_str())), None],
+            false,
+        )
+        .expect("facts")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("ok");
+        assert_eq!(signer[0].values[1], Value::sym("alice@example.com"));
     }
 }

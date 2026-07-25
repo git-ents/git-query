@@ -65,10 +65,9 @@ impl FactSource for RepoFacts<'_> {
             ("member", 1) => member::member_facts(self.repo, key, bound, attribute),
             ("revoked", 1) => member::revoked_facts(self.repo, key, bound, attribute),
             ("claim", 1) => claim::claim_facts(self.repo, key, bound, attribute),
-            ("kind", 2) => claim::trailer_facts(self.repo, key, bound, attribute, "Kind"),
-            ("target", 2) => claim::trailer_facts(self.repo, key, bound, attribute, "Target"),
-            ("signer", 2) => claim::trailer_facts(self.repo, key, bound, attribute, "Signer"),
-            ("verdict", 2) => claim::trailer_facts(self.repo, key, bound, attribute, "Verdict"),
+            ("kind", 2) | ("target", 2) | ("signer", 2) | ("verdict", 2) => {
+                claim::trailer_facts(self.repo, key, bound, attribute)
+            }
             ("anchor", 1) => anchor::facts(self.repo, key, bound, attribute),
             ("line", 2) => line::facts(self.repo, key, bound, attribute),
             _ => Err(HostError::NoProvider(key.clone())),
