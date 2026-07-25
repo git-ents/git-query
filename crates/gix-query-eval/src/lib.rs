@@ -50,6 +50,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(test)]
+mod conformance;
 mod demand;
 mod engine;
 mod error;
