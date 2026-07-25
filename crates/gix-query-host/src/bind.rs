@@ -319,6 +319,63 @@ mod tests {
         assert_eq!(row[4], Value::Int(4));
     }
 
+    /// The fourth quadrant: `(moved, edited)`. Section 1.5 calls this "the
+    /// knob that was missing" from the old flat status enum -- a span that
+    /// moved but is textually intact should almost always carry a review
+    /// forward, while one that stayed put but was edited should almost
+    /// never, and a design that cannot even name the fourth combination
+    /// cannot express the difference. Renaming the file *and* rewriting the
+    /// anchored lines in the same commit keeps the rename detectable (only
+    /// two of ten lines change) while leaving the anchored range itself
+    /// unmappable.
+    #[test]
+    fn bind_reports_moved_and_edited_when_a_rename_also_touches_the_anchored_range() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.write("file.txt", &numbered(1..=10));
+        f.git(&["add", "-A"]);
+        f.commit("one");
+        let repo = f.open();
+        let anchor = gix_anchor::capture(
+            &repo,
+            "HEAD",
+            "file.txt",
+            Some(gix_anchor::LineRange { start: 3, end: 4 }),
+        )
+        .expect("capture");
+        let id = attach_position(&repo, anchor);
+
+        f.git(&["mv", "file.txt", "moved.txt"]);
+        let edited: String = (1..=10)
+            .map(|n| {
+                if n == 3 || n == 4 {
+                    format!("rewritten {n}\n")
+                } else {
+                    format!("line {n}\n")
+                }
+            })
+            .collect();
+        f.write("moved.txt", &edited);
+        f.git(&["add", "-A"]);
+        f.commit("two");
+        let repo = f.open();
+        let head = f.rev_parse("HEAD");
+
+        let key = PredicateKey::new("bind", 7);
+        let mut out = Vec::new();
+        RepoBuiltins::new(&repo)
+            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .expect("call");
+        assert_eq!(out.len(), 1);
+        let row = &out[0];
+        assert_eq!(row[5], Value::sym("moved"), "the file moved to a new path");
+        assert_eq!(
+            row[6],
+            Value::sym("edited"),
+            "the anchored range itself was rewritten, not merely shifted"
+        );
+    }
+
     #[test]
     fn bind_reports_same_edited_for_an_in_place_edit() {
         let dir = tempfile::tempdir().expect("tempdir");
