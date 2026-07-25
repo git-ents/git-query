@@ -79,13 +79,34 @@ impl FactSource for RepoFacts<'_> {
 mod tests {
     use super::*;
     use gix_anchor::{Binding, Store};
-    use gix_query_ir::{Backing, PredicateClass, host_predicates};
+    use gix_query_ir::{Backing, PredicateClass, Value, host_predicates};
     use test_support::Fixture;
 
-    /// Every EDB predicate the registry declares has a provider here. This is
-    /// what makes the registry's mode sets testable rather than aspirational:
-    /// a predicate added to `host_predicates()` with no matching arm here
-    /// fails this test instead of failing silently at query time.
+    /// The mode vector requiring the fewest bound arguments among those the
+    /// entry's `Edb` mode set supports -- the cheapest legal call, and the
+    /// one every predicate must answer for regardless of which richer
+    /// vectors it also supports.
+    fn least_bound_vector(entry: &gix_query_ir::PredicateEntry) -> gix_query_ir::ModeVector {
+        let PredicateClass::Edb { modes, .. } = &entry.class else {
+            panic!("{} is not an EDB predicate", entry.key);
+        };
+        modes
+            .vectors()
+            .min_by_key(|v| v.required_bound().len())
+            .cloned()
+            .unwrap_or_else(|| panic!("{}'s mode set is empty", entry.key))
+    }
+
+    /// Every EDB predicate the registry declares has a provider here, and
+    /// that provider actually answers for the predicate's least-bound legal
+    /// mode -- not merely `provides()`, which only reads the `PROVIDED` list
+    /// `facts()`'s dispatch `match` is supposed to mirror. The two used to be
+    /// two lists in one comment's word: a predicate added to both
+    /// `host_predicates()` and `PROVIDED` with no matching dispatch arm would
+    /// still pass a `provides()`-only check, and only fail at query time with
+    /// `HostError::NoProvider`. Calling `facts()` here is what turns that
+    /// into a test failure instead, and it also gives this fixture -- built
+    /// but previously never queried -- a purpose.
     #[test]
     fn every_registered_edb_predicate_is_provided() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -93,6 +114,14 @@ mod tests {
         f.commit_file("a.txt", "a\n", "first");
         let repo = f.open();
         let facts = RepoFacts::new(&repo);
+        // A well-formed placeholder for every Rev-/Oid-/Member-typed bound
+        // position a least-bound vector can demand -- none of these
+        // predicates' least-bound vectors require a Symbol-typed argument
+        // (the subject position is always an identity), so one hex-shaped
+        // placeholder covers every case. It need not resolve to a real
+        // object: every provider answers "no rows" for an object that does
+        // not exist, never an error.
+        let placeholder = Value::sym("0".repeat(40));
 
         for entry in host_predicates() {
             assert!(
@@ -100,6 +129,27 @@ mod tests {
                 "{} has no host provider",
                 entry.key
             );
+
+            let vector = least_bound_vector(&entry);
+            let bound: Vec<Option<Value>> = vector
+                .modes()
+                .iter()
+                .map(|mode| match mode {
+                    gix_query_ir::Mode::Bound => Some(placeholder.clone()),
+                    gix_query_ir::Mode::Free => None,
+                })
+                .collect();
+
+            facts
+                .facts(&entry.key, &bound, false)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{} dispatch failed for its own least-bound mode {vector}: {e}",
+                        entry.key
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_else(|e| panic!("{}: {e}", entry.key));
         }
     }
 
