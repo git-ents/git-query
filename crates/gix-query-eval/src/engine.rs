@@ -216,6 +216,38 @@ impl ResourceProvider for MemoryResourceProvider {
     }
 }
 
+/// Run `program` against `tables` and trace the derivation of one ground
+/// fact, `predicate(tuple)`.
+///
+/// Runs the whole program fresh, exactly like [`run`]: Nemo's trace only
+/// covers a completed evaluation, so there is no cheaper route than
+/// re-executing against the same, already-converged tables a caller's demand
+/// loop produced.
+///
+/// # Errors
+/// [`EvalError::Nemo`] if Nemo rejects the program, the tuple contains a
+/// value that cannot be rendered (a `"` in a symbol), or tracing itself
+/// fails.
+pub(crate) fn trace_fact(
+    program: &NemoProgram,
+    tables: &NemoTables,
+    predicate: &PredicateKey,
+    tuple: &[Value],
+) -> Result<Option<nemo::execution::tracing::trace::ExecutionTraceTree>, EvalError> {
+    let mut engine = run(program, tables)?;
+    let literal = tuple
+        .iter()
+        .map(crate::lower::value_literal)
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    let text = format!("{}({literal})", predicate.name);
+    let fact = nemo::rule_model::components::fact::Fact::parse(&text)
+        .map_err(|e| EvalError::Nemo(format!("{e:?}")))?;
+    let (trace, handles) =
+        block_on(engine.trace(vec![fact])).map_err(|e| EvalError::Nemo(format!("{e}")))?;
+    Ok(trace.tree(handles[0]))
+}
+
 /// Run one future to completion on a fresh current-thread runtime.
 ///
 /// A fresh runtime per call rather than one held across the demand loop: the

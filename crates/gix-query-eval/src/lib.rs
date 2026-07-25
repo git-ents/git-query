@@ -58,6 +58,7 @@ mod rewrite;
 mod symbol;
 #[cfg(test)]
 mod testutil;
+mod trace;
 
 pub use demand::{CallLog, LoggedCall, LoopResult, run_to_fixpoint};
 pub use error::EvalError;
@@ -66,3 +67,4 @@ pub use rewrite::{
     DemandKind, DemandSite, RewrittenProgram, adorn_body, rewrite as rewrite_program,
 };
 pub use symbol::Symbol;
+pub use trace::{DerivationTree, NegationWitness, explain};
