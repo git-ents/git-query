@@ -19,6 +19,11 @@ nemo-physical = { git = "https://github.com/knowsys/nemo", rev = "4415bc2e180adf
 tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
+# Test-only: builds real CheckedPrograms so fixtures exercise the actual
+# nine passes rather than a hand-rolled stand-in. Never a normal dependency --
+# gix-query-check has no reason to know this crate exists, and this crate's
+# own code never calls it; only its test modules do.
+gix-query-check = { path = "../gix-query-check" }
 gix-query-parse = { path = "../gix-query-parse" }
 proptest = "1"
 rstest = "0.26"

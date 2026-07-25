@@ -53,6 +53,8 @@
 mod demand;
 mod engine;
 mod error;
+#[cfg(test)]
+mod golden;
 mod lower;
 mod rewrite;
 mod symbol;

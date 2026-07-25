@@ -41,9 +41,16 @@ use crate::symbol::Symbol;
 #[derive(Debug, Clone)]
 pub struct NemoProgram {
     text: String,
-    /// One `(name, arity)` per rule, in emission order -- what the emission
-    /// audit checks the parsed-back program against.
-    signatures: Vec<(String, usize)>,
+    /// One `(name, arity)` per rule with a non-empty body, in emission order.
+    rule_signatures: Vec<(String, usize)>,
+    /// One `(name, arity)` per bodyless rule (a fact), in emission order.
+    ///
+    /// Kept apart from `rule_signatures` because Nemo's own parser does not
+    /// consider a fact a rule at all -- it becomes a `Statement::Fact`, not a
+    /// `Statement::Rule` -- so a single combined count would make the audit
+    /// report every program containing a magic seed or a `carries(...).`-style
+    /// fact as missing rules that were never rules to begin with.
+    fact_signatures: Vec<(String, usize)>,
 }
 
 impl NemoProgram {
@@ -54,22 +61,33 @@ impl NemoProgram {
     pub fn emit(program: &RewrittenProgram) -> Result<Self, EvalError> {
         let rules = program.rules.rules();
         let mut text = String::new();
-        let mut signatures = Vec::with_capacity(rules.len());
+        let mut rule_signatures = Vec::new();
+        let mut fact_signatures = Vec::new();
         for rule in rules {
             let rendered = render_rule(rule)?;
             text.push_str(&rendered);
             text.push('\n');
-            signatures.push((
+            let signature = (
                 rule.head.predicate.name.to_string(),
                 rule.head.predicate.arity,
-            ));
+            );
+            if rule.is_fact() {
+                fact_signatures.push(signature);
+            } else {
+                rule_signatures.push(signature);
+            }
         }
-        Ok(Self { text, signatures })
+        Ok(Self {
+            text,
+            rule_signatures,
+            fact_signatures,
+        })
     }
 
     /// Parse this program's own text back through Nemo's parser and check
-    /// that the recovered program has exactly the rule count, and exactly the
-    /// predicate names and arities in emission order, that we lowered.
+    /// that the recovered program has exactly the rule count, exactly the
+    /// fact count, and exactly the predicate names and arities in emission
+    /// order for each, that we lowered.
     ///
     /// This is the check that answers "do we have the subset we support" for
     /// *this* program -- it catches the class of emitter bug types cannot: a
@@ -78,21 +96,31 @@ impl NemoProgram {
     /// execution.
     ///
     /// # Errors
-    /// [`EvalError::EmissionAudit`] if Nemo rejects the text, if the rule
-    /// count differs, or if any rule's head predicate or arity differs.
+    /// [`EvalError::EmissionAudit`] if Nemo rejects the text, if the rule or
+    /// fact count differs, or if any signature differs.
     pub fn audit(&self) -> Result<(), EvalError> {
         use gix_query_ir_nemo_shim::ProgramReadExt as _;
 
         let parsed = nemo::api::load_program(self.text.clone(), "gix-query-eval".to_owned())
             .map_err(|report| EvalError::EmissionAudit(format!("{report:?}")))?;
-        let recovered: Vec<(String, usize)> = parsed.rule_signatures();
-        if recovered != self.signatures {
+        let recovered_rules = parsed.rule_signatures();
+        if recovered_rules != self.rule_signatures {
             return Err(EvalError::EmissionAudit(format!(
                 "lowered {} rules with signatures {:?}, but Nemo's own parser recovered {} with {:?}",
-                self.signatures.len(),
-                self.signatures,
-                recovered.len(),
-                recovered,
+                self.rule_signatures.len(),
+                self.rule_signatures,
+                recovered_rules.len(),
+                recovered_rules,
+            )));
+        }
+        let recovered_facts = parsed.fact_signatures();
+        if recovered_facts != self.fact_signatures {
+            return Err(EvalError::EmissionAudit(format!(
+                "lowered {} facts with signatures {:?}, but Nemo's own parser recovered {} with {:?}",
+                self.fact_signatures.len(),
+                self.fact_signatures,
+                recovered_facts.len(),
+                recovered_facts,
             )));
         }
         Ok(())
@@ -107,6 +135,7 @@ mod gix_query_ir_nemo_shim {
 
     pub(crate) trait ProgramReadExt {
         fn rule_signatures(&self) -> Vec<(String, usize)>;
+        fn fact_signatures(&self) -> Vec<(String, usize)>;
     }
 
     impl<P: ProgramRead> ProgramReadExt for P {
@@ -122,6 +151,12 @@ mod gix_query_ir_nemo_shim {
                     let atom = &heads[0];
                     (atom.predicate().name().to_owned(), atom.len())
                 })
+                .collect()
+        }
+
+        fn fact_signatures(&self) -> Vec<(String, usize)> {
+            self.facts()
+                .map(|f| (f.predicate().name().to_owned(), f.terms().count()))
                 .collect()
         }
     }
@@ -338,7 +373,7 @@ mod tests {
         // fact.
         let rewritten = trivial_rewritten();
         let mut emitted = NemoProgram::emit(&rewritten).expect("emits");
-        emitted.signatures.push(("ghost".to_owned(), 3));
+        emitted.rule_signatures.push(("ghost".to_owned(), 3));
         let err = emitted
             .audit()
             .expect_err("a phantom signature must be caught");
