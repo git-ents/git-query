@@ -1,4 +1,6 @@
-/target/
+# Nested workspaces (the Nemo adapter, the spike) have their own, so this is
+# deliberately unanchored.
+target/
 /.claude/
 /.rumdl_cache/
 *.html
