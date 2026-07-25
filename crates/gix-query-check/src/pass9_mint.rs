@@ -27,7 +27,11 @@ pub(crate) fn check(
             continue;
         }
         for lit in &rule.body {
-            let Literal::Builtin(atom) = lit else {
+            // Both syntactic forms: a module that has not been through name
+            // resolution carries `bind(...)` as a positive literal, and
+            // matching only the reclassified form let exactly the program
+            // this pass exists to reject through unresolved.
+            let (Literal::Builtin(atom) | Literal::Positive(atom)) = lit else {
                 continue;
             };
             let Some(b) = registry.builtin(&atom.predicate) else {

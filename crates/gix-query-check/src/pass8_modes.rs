@@ -61,8 +61,9 @@ pub(crate) fn check_goal(
     let mut body = Vec::with_capacity(goal.body.len());
     for lit in &goal.body {
         let cb = call_bound(lit, &bound_vars);
-        body.push(Adornment::new(cb, lit.key().arity));
         check_literal_mode(lit, cb, registry, Site::Goal, errors);
+        let recorded = body_adornment(lit, cb, registry);
+        body.push(Adornment::new(recorded, lit.key().arity));
         bind_generator(lit, &mut bound_vars);
     }
     gix_query_ir::GoalAdornments { body }
@@ -139,14 +140,64 @@ fn bind_generator(lit: &Literal, bound_vars: &mut BTreeSet<Var>) {
 /// handled by their caller, since a mode *set* needs to be selected against
 /// `call_bound` rather than read as one fixed vector.
 fn fixed_or_idb_required(lit: &Literal, registry: &Registry) -> ArgSet {
+    if let Some(b) = builtin_of(lit, registry) {
+        return b.modes.required_bound();
+    }
     match lit {
         Literal::Negated(a) => ArgSet::full(a.terms.len()),
         Literal::Compare(_) => ArgSet::full(2),
-        Literal::Builtin(a) => registry
-            .builtin(&a.predicate)
-            .map(|b| b.modes.required_bound())
-            .unwrap_or_default(),
+        Literal::Builtin(_) => ArgSet::default(),
         Literal::Positive(a) => required_bound_of(&a.predicate, registry),
+    }
+}
+
+/// The builtin a literal calls, whichever syntactic form it arrived in.
+///
+/// A parser that has run name resolution produces [`Literal::Builtin`], but a
+/// caller may hand us a module that has not, and then `bind(...)` is a
+/// [`Literal::Positive`] naming a key the predicate map has never heard of.
+/// Reading only the `Builtin` form let such a literal past mode checking and
+/// past minting confinement with an empty requirement -- accepted, and
+/// accepted *differently* from the identical resolved module. The registry is
+/// right here, so ask it.
+fn builtin_of<'r>(lit: &Literal, registry: &'r Registry) -> Option<&'r gix_query_ir::BuiltinEntry> {
+    match lit {
+        Literal::Builtin(a) | Literal::Positive(a) => registry.builtin(&a.predicate),
+        Literal::Negated(_) | Literal::Compare(_) => None,
+    }
+}
+
+/// What a body literal's adornment records.
+///
+/// For everything except a derived call this is `cb`, the set of arguments
+/// bound on entry -- which is what an EDB provider is handed and what the
+/// demand loop reports a builtin was called in.
+///
+/// A derived call is different, and getting it wrong is silent. The magic-set
+/// rewrite guards each rule for `p` on `p`'s *head* adornment, which is `p`'s
+/// inferred required-bound set, and it keys the demand it emits at a call
+/// site on the *body* adornment. The rewrite deliberately does not rename
+/// predicates, so `p` has exactly one guard. If a call site binds more than
+/// `p` requires and we recorded the full set, the rewrite would emit
+/// `magic_p_bbf` while the guard consumes `magic_p_bff`: demand produced and
+/// never consumed, so `p` derives nothing, the rule above it never fires, and
+/// the query answers zero rows with no diagnostic anywhere. On the reference
+/// vocabulary that is a self-approved blob failing to block a merge.
+///
+/// So a derived call records the callee's requirement, not the caller's
+/// generosity. Mode *checking* still uses `cb`, which is why passing the
+/// check is what makes this narrowing safe: a successful check has already
+/// established that the requirement is a subset of what is bound.
+fn body_adornment(lit: &Literal, cb: ArgSet, registry: &Registry) -> ArgSet {
+    let Literal::Positive(a) = lit else {
+        return cb;
+    };
+    if builtin_of(lit, registry).is_some() {
+        return cb;
+    }
+    match registry.predicate(&a.predicate).map(|e| &e.class) {
+        Some(PredicateClass::Idb { .. }) => required_bound_of(&a.predicate, registry),
+        Some(PredicateClass::Edb { .. }) | None => cb,
     }
 }
 
@@ -251,8 +302,9 @@ fn validate(
         let mut body = Vec::with_capacity(rule.body.len());
         for lit in &rule.body {
             let cb = call_bound(lit, &bound_vars);
-            body.push(Adornment::new(cb, lit.key().arity));
             check_literal_mode(lit, cb, registry, site, errors);
+            let recorded = body_adornment(lit, cb, registry);
+            body.push(Adornment::new(recorded, lit.key().arity));
             bind_generator(lit, &mut bound_vars);
         }
         let head_adornment = Adornment::new(req, head.terms.len());
@@ -352,6 +404,103 @@ mod tests {
         let req = required_bound_of(&PredicateKey::new("reach", 2), &registry);
         assert!(req.contains(0), "Rev must be required bound");
         assert!(!req.contains(1), "C stays free");
+    }
+
+    /// A call site that binds more than the callee requires must still record
+    /// the callee's requirement, because that is the single guard the
+    /// magic-set rewrite generates for it. Recording the caller's generosity
+    /// instead produces demand under one adornment and consumes it under
+    /// another, and the predicate silently derives nothing.
+    #[test]
+    fn a_derived_call_records_the_callee_requirement_not_the_call_site() {
+        let mut program = commit_walk();
+        // ancestor(R, C) :- reach(R, C).            -- requires R
+        // both(R, C)     :- reach(R, C), ancestor(R, C).  -- binds R and C
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("ancestor", vec![Term::var("R"), Term::var("C")]),
+                vec![Literal::Positive(Atom::new(
+                    "reach",
+                    vec![Term::var("R"), Term::var("C")],
+                ))],
+            ),
+            "m",
+        );
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("both", vec![Term::var("R"), Term::var("C")]),
+                vec![
+                    Literal::Positive(Atom::new("reach", vec![Term::var("R"), Term::var("C")])),
+                    Literal::Positive(Atom::new("ancestor", vec![Term::var("R"), Term::var("C")])),
+                ],
+            ),
+            "m",
+        );
+
+        let mut errors = Errors::new();
+        let mut registry = crate::registry_build::build(&program, &Registry::host(), &mut errors);
+        crate::pass3_types::check(&program, &mut registry, &mut errors);
+        let adornments = check(&program, &mut registry, &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let ancestor_required = required_bound_of(&PredicateKey::new("ancestor", 2), &registry);
+        let both = adornments
+            .values()
+            .find(|a| program.rules()[a.rule.0].head.predicate.name.as_ref() == "both")
+            .expect("both/2 has a rule");
+        let ancestor_call = &both.body[1];
+        assert_eq!(
+            ancestor_call.bound, ancestor_required,
+            "the call site binds R and C; ancestor only requires R"
+        );
+        assert!(ancestor_required.contains(0) && !ancestor_required.contains(1));
+    }
+
+    /// A module that has not been through name resolution carries `bind(...)`
+    /// as a positive literal. It must be checked identically, or the same
+    /// text is accepted or rejected depending on which entry point the caller
+    /// used.
+    #[test]
+    fn a_builtin_written_as_a_positive_literal_is_still_mode_checked() {
+        let mut program = Program::new();
+        crate::testutil::add(
+            &mut program,
+            Rule::new(
+                Atom::new("wrap", vec![Term::var("B"), Term::var("S"), Term::var("E")]),
+                vec![Literal::Positive(Atom::new(
+                    "bind",
+                    vec![
+                        Term::var("A"),
+                        Term::var("Rev"),
+                        Term::var("B"),
+                        Term::var("S"),
+                        Term::var("E"),
+                        Term::var("Po"),
+                        Term::var("Co"),
+                    ],
+                ))],
+            ),
+            "m",
+        );
+
+        let mut errors = Errors::new();
+        let mut registry = crate::registry_build::build(&program, &Registry::host(), &mut errors);
+        crate::pass3_types::check(&program, &mut registry, &mut errors);
+        errors.clear();
+        check(&program, &mut registry, &mut errors);
+
+        assert!(
+            !errors.is_empty(),
+            "the unbound anchor and rev went unnoticed"
+        );
+        assert!(errors.iter().all(|e| e.pass() == Pass::Modes), "{errors:?}");
+        let rendered = errors.iter().map(ToString::to_string).collect::<String>();
+        assert!(
+            rendered.contains('A') && rendered.contains("Rev"),
+            "{rendered}"
+        );
     }
 
     #[test]
