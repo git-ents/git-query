@@ -21,12 +21,18 @@ repos:
         args: [--write-changes, --force-exclude, --config, .config/typos.toml]
   - repo: local
     hooks:
+      # `rustfmt` on the staged files, not `cargo fmt --all`. `--all` formats
+      # path dependencies too, and this workspace has path dependencies on
+      # sibling repositories -- so committing here rewrote files in
+      # ../git-anchor and ../git-store, mixing our formatting into whatever
+      # uncommitted work was sitting in those trees. Naming the files keeps a
+      # commit's reach equal to the commit's contents.
       - id: fmt
-        name: cargo fmt
+        name: rustfmt
         language: system
-        entry: cargo fmt --all --
+        entry: rustfmt --edition 2024
         types: [rust]
-        pass_filenames: false
+        pass_filenames: true
       - id: clippy
         name: cargo clippy
         language: system
