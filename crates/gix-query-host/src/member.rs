@@ -14,12 +14,38 @@ use crate::util::{backend, backend_boxed, backend_msg, fact, sym_oid, try_parse_
 
 const MEMBERS_PREFIX: &str = "refs/meta/members/";
 
-/// `Some(true)` revoked, `Some(false)` active, `None` no such member ref.
+/// A member ref's standing: active or revoked. Absence is `None` at the call
+/// site (`status` returns `Option<MemberStatus>`), not a third variant here --
+/// "no such ref" and "this ref names a standing" are different kinds of
+/// answer, and collapsing them into one three-way enum would put "absent"
+/// next to two states it is not a peer of. What this type removes is the
+/// `bool` it replaces: a plain `true`/`false` return required remembering,
+/// at every call site, which way the flag ran; `Active`/`Revoked` needs no
+/// such memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MemberStatus {
+    /// The ref points at a commit.
+    Active,
+    /// The ref points at anything else (a blob, in practice).
+    Revoked,
+}
+
+impl MemberStatus {
+    fn of(kind: gix::objs::Kind) -> Self {
+        if kind == gix::objs::Kind::Commit {
+            Self::Active
+        } else {
+            Self::Revoked
+        }
+    }
+}
+
+/// `member`'s standing, or `None` for no such member ref.
 fn status(
     repo: &gix::Repository,
     key: &PredicateKey,
     member: ObjectId,
-) -> Result<Option<bool>, HostError> {
+) -> Result<Option<MemberStatus>, HostError> {
     let refname = format!("{MEMBERS_PREFIX}{member}");
     let Some(mut reference) = repo
         .try_find_reference(&refname)
@@ -36,10 +62,10 @@ fn status(
         .map_err(|error| backend(key, error))?
         .ok_or_else(|| backend_msg(key, format!("{refname} targets a missing object")))?
         .kind();
-    Ok(Some(kind != gix::objs::Kind::Commit))
+    Ok(Some(MemberStatus::of(kind)))
 }
 
-/// Every member ref, as `(member, revoked, refname)`, sorted by member.
+/// Every member ref, as `(member, status, refname)`, sorted by member.
 ///
 /// A ref whose leaf is not a hex id is a stray or hand-written ref sharing
 /// this namespace with the real ones -- `test-support`'s own generic `refs()`
@@ -50,7 +76,7 @@ fn status(
 fn all(
     repo: &gix::Repository,
     key: &PredicateKey,
-) -> Result<Vec<(ObjectId, bool, String)>, HostError> {
+) -> Result<Vec<(ObjectId, MemberStatus, String)>, HostError> {
     let platform = repo.references().map_err(|error| backend(key, error))?;
     let mut out = Vec::new();
     for reference in platform
@@ -74,7 +100,7 @@ fn all(
             .map_err(|error| backend(key, error))?
             .ok_or_else(|| backend_msg(key, format!("{name} targets a missing object")))?
             .kind();
-        out.push((member, kind != gix::objs::Kind::Commit, name));
+        out.push((member, MemberStatus::of(kind), name));
     }
     out.sort();
     Ok(out)
@@ -97,7 +123,9 @@ pub(crate) fn member_facts<'a>(
             };
             let refname = format!("{MEMBERS_PREFIX}{member}");
             let out: Vec<Result<Fact, HostError>> = match status(repo, key, member)? {
-                Some(_) => vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))],
+                Some(MemberStatus::Active | MemberStatus::Revoked) => {
+                    vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))]
+                }
                 None => vec![],
             };
             Ok(Box::new(out.into_iter()))
@@ -105,7 +133,7 @@ pub(crate) fn member_facts<'a>(
         _ => {
             let out: Vec<_> = all(repo, key)?
                 .into_iter()
-                .map(|(member, _revoked, name)| {
+                .map(|(member, _status, name)| {
                     Ok(fact(vec![sym_oid(member)], Some(&name), attribute))
                 })
                 .collect();
@@ -127,16 +155,18 @@ pub(crate) fn revoked_facts<'a>(
             };
             let refname = format!("{MEMBERS_PREFIX}{member}");
             let out: Vec<Result<Fact, HostError>> = match status(repo, key, member)? {
-                Some(true) => vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))],
-                Some(false) | None => vec![],
+                Some(MemberStatus::Revoked) => {
+                    vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))]
+                }
+                Some(MemberStatus::Active) | None => vec![],
             };
             Ok(Box::new(out.into_iter()))
         }
         _ => {
             let out: Vec<_> = all(repo, key)?
                 .into_iter()
-                .filter(|(_, revoked, _)| *revoked)
-                .map(|(member, _revoked, name)| {
+                .filter(|(_, status, _)| *status == MemberStatus::Revoked)
+                .map(|(member, _status, name)| {
                     Ok(fact(vec![sym_oid(member)], Some(&name), attribute))
                 })
                 .collect();
