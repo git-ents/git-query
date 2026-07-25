@@ -5,4 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs"] }
+gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
+
+[dev-dependencies]
+tempfile = "3"
