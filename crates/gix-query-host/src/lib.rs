@@ -24,6 +24,7 @@
 mod anchor;
 mod author;
 mod bind;
+mod builtins;
 mod claim;
 mod commit;
 mod facts;
@@ -33,4 +34,5 @@ mod tree;
 mod util;
 
 pub use bind::RepoBuiltins;
+pub use builtins::AllBuiltins;
 pub use facts::RepoFacts;
