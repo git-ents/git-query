@@ -689,4 +689,51 @@ mod tests {
             );
         }
     }
+
+    /// `gix_anchor::Position::label()`/`Content::label()` and
+    /// `gix_query_ir::ValueType::Position`/`Content`'s closed domains are two
+    /// declarations of the same porcelain vocabulary, and this crate is the
+    /// only one that can see both. Nothing else compares them: if
+    /// `gix-anchor` ever renamed a label, `bind` would go on emitting it
+    /// (this crate calls `.label()`, never a literal), but
+    /// `carries(same, intact).` in a rule module would silently stop
+    /// joining against it, and every review would stop carrying with no
+    /// error anywhere. The `match`es below have no wildcard arm, so
+    /// `gix-anchor` adding a variant is a compile error here rather than a
+    /// gap this test cannot see.
+    #[test]
+    fn projection_axis_labels_are_admitted_by_the_registry_domains() {
+        for position in [
+            gix_anchor::Position::Same,
+            gix_anchor::Position::Moved,
+            gix_anchor::Position::Lost,
+        ] {
+            let label = match position {
+                gix_anchor::Position::Same
+                | gix_anchor::Position::Moved
+                | gix_anchor::Position::Lost => position.label(),
+            };
+            assert!(
+                gix_query_ir::ValueType::Position.admits(label),
+                "gix_anchor::Position::{position:?}.label() is {label:?}, which \
+                 ValueType::Position's domain does not admit"
+            );
+        }
+        for content in [
+            gix_anchor::Content::Intact,
+            gix_anchor::Content::Edited,
+            gix_anchor::Content::None,
+        ] {
+            let label = match content {
+                gix_anchor::Content::Intact
+                | gix_anchor::Content::Edited
+                | gix_anchor::Content::None => content.label(),
+            };
+            assert!(
+                gix_query_ir::ValueType::Content.admits(label),
+                "gix_anchor::Content::{content:?}.label() is {label:?}, which \
+                 ValueType::Content's domain does not admit"
+            );
+        }
+    }
 }
