@@ -147,15 +147,29 @@ fn span(
             Ok((sym_oid(blob), start, end))
         }
         Projection::Outdated { path } => {
-            // Content is edited, so there is no post-edit line mapping by
-            // definition; the *original* anchored range is reported instead,
-            // which is why `gix_anchor` guarantees `Outdated` always carries
-            // `anchor.lines` rather than a fresh one.
-            let range = anchor
-                .lines
-                .expect("Outdated is only reported for a line-range anchor");
-            let blob = path_blob(target_tree, path).map_or_else(|| Value::sym("none"), sym_oid);
-            Ok((blob, int(range.start), int(range.end)))
+            // Content is edited (`axes` reports `Content::Edited` for every
+            // `Outdated`, never `Content::None`), so there is no post-edit
+            // line mapping to report; the pre-edit range against the
+            // anchor's own blob is reported instead. `anchor.lines` is *not*
+            // guaranteed `Some` here: `project_exact_onto`'s `!is_blob`
+            // branch (`projection.rs:418`) and `project_from_context`'s
+            // (`projection.rs:473`) both return `Outdated` before looking at
+            // it, so a whole-file anchor reaches this arm exactly the same
+            // as a line-range one whenever the path survives as a symlink or
+            // a gitlink rather than a regular blob. `line_span` already
+            // handles a `None` range by measuring the anchor's own blob, so
+            // routing through it here rather than unwrapping directly is
+            // what keeps that case from panicking.
+            let (start, end) = line_span(repo, key, anchor.blob(), anchor.lines)?;
+            // `path_blob` only returns a regular-blob entry, so the same
+            // non-blob case that leaves `anchor.lines` unmapped also leaves
+            // no post-edit blob to name here. Falling back to the anchor's
+            // own (pre-edit) blob rather than the `none` sentinel matters:
+            // `none` is reserved for `Position::Lost`, and pairing it with
+            // `Content::Edited` is a combination the status lattice does not
+            // allow (`query-and-rules.adoc`, the status lattice).
+            let blob = path_blob(target_tree, path).unwrap_or_else(|| anchor.blob());
+            Ok((sym_oid(blob), start, end))
         }
         Projection::Deleted => Ok((Value::sym("none"), 0, 0)),
     }
@@ -324,6 +338,158 @@ mod tests {
         assert_eq!(row[2], Value::sym("none"));
         assert_eq!(row[5], Value::sym("lost"));
         assert_eq!(row[6], Value::sym("none"));
+    }
+
+    /// Reproduces the crash: `project_exact_onto`'s `!is_blob` branch
+    /// (`projection.rs:418`) returns `Outdated` before ever looking at
+    /// `anchor.lines`, and a whole-file anchor's `lines` is `None`. `span`
+    /// used to `.expect()` a line range unconditionally in that arm, so this
+    /// call used to panic and abort the process rather than return a
+    /// verdict -- exactly the failure mode that makes a fixpoint over an
+    /// ordinary repository state unusable as a gate.
+    #[test]
+    fn bind_does_not_panic_when_a_whole_file_anchor_becomes_a_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.write("file.txt", &numbered(1..=10));
+        f.git(&["add", "-A"]);
+        f.commit("one");
+        let repo = f.open();
+        let original_blob = f.blob_at("HEAD", "file.txt");
+        let anchor = gix_anchor::capture(&repo, "HEAD", "file.txt", None).expect("capture");
+        let id = attach_position(&repo, anchor);
+
+        let link_target = f.hash_object("elsewhere.txt");
+        f.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "120000",
+            &link_target,
+            "file.txt",
+        ]);
+        f.commit("two");
+        let repo = f.open();
+        let head = f.rev_parse("HEAD");
+
+        let key = PredicateKey::new("bind", 7);
+        let mut out = Vec::new();
+        RepoBuiltins::new(&repo)
+            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .expect("call must not panic");
+        assert_eq!(out.len(), 1);
+        let row = &out[0];
+        assert_eq!(row[5], Value::sym("same"), "the path did not move");
+        assert_eq!(
+            row[6],
+            Value::sym("edited"),
+            "axes() always reports Outdated as edited"
+        );
+        assert_ne!(
+            row[2],
+            Value::sym("none"),
+            "none is reserved for a lost position, never paired with edited content"
+        );
+        assert_eq!(
+            row[2],
+            Value::sym(original_blob),
+            "falls back to the anchor's own blob"
+        );
+        assert_eq!(row[3], Value::Int(1));
+        assert_eq!(row[4], Value::Int(10));
+    }
+
+    /// The same crash, via a gitlink (a submodule entry) rather than a
+    /// symlink -- both are "an entry survives at the anchored path but is
+    /// not a regular blob", the exact condition `project_exact_onto`'s
+    /// `!is_blob` branch exists for.
+    #[test]
+    fn bind_does_not_panic_when_a_whole_file_anchor_becomes_a_gitlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.write("file.txt", &numbered(1..=10));
+        f.git(&["add", "-A"]);
+        f.commit("one");
+        let repo = f.open();
+        let original_blob = f.blob_at("HEAD", "file.txt");
+        let anchor = gix_anchor::capture(&repo, "HEAD", "file.txt", None).expect("capture");
+        let id = attach_position(&repo, anchor);
+
+        // A gitlink's target need not resolve to a real object in this
+        // repository -- git never validates it, since a submodule's commit
+        // lives in a different object database entirely.
+        let fake_submodule_commit = "a".repeat(40);
+        f.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000",
+            &fake_submodule_commit,
+            "file.txt",
+        ]);
+        f.commit("two");
+        let repo = f.open();
+        let head = f.rev_parse("HEAD");
+
+        let key = PredicateKey::new("bind", 7);
+        let mut out = Vec::new();
+        RepoBuiltins::new(&repo)
+            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .expect("call must not panic");
+        assert_eq!(out.len(), 1);
+        let row = &out[0];
+        assert_eq!(row[5], Value::sym("same"));
+        assert_eq!(row[6], Value::sym("edited"));
+        assert_ne!(row[2], Value::sym("none"));
+        assert_eq!(row[2], Value::sym(original_blob));
+    }
+
+    /// The `none`/`edited` combination is unrepresentable regardless of
+    /// whether the anchor is whole-file or line-range -- a line-range anchor
+    /// hitting the same non-blob entry does not panic (`anchor.lines` is
+    /// already `Some`), but before this fix it still emitted the sentinel
+    /// blob paired with edited content.
+    #[test]
+    fn bind_never_pairs_the_none_sentinel_with_edited_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.write("file.txt", &numbered(1..=10));
+        f.git(&["add", "-A"]);
+        f.commit("one");
+        let repo = f.open();
+        let anchor = gix_anchor::capture(
+            &repo,
+            "HEAD",
+            "file.txt",
+            Some(gix_anchor::LineRange { start: 3, end: 4 }),
+        )
+        .expect("capture");
+        let id = attach_position(&repo, anchor);
+
+        let link_target = f.hash_object("elsewhere.txt");
+        f.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "120000",
+            &link_target,
+            "file.txt",
+        ]);
+        f.commit("two");
+        let repo = f.open();
+        let head = f.rev_parse("HEAD");
+
+        let key = PredicateKey::new("bind", 7);
+        let mut out = Vec::new();
+        RepoBuiltins::new(&repo)
+            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .expect("call");
+        assert_eq!(out.len(), 1);
+        let row = &out[0];
+        assert_eq!(row[6], Value::sym("edited"));
+        assert_ne!(row[2], Value::sym("none"));
+        assert_eq!(row[3], Value::Int(3));
+        assert_eq!(row[4], Value::Int(4));
     }
 
     #[test]
