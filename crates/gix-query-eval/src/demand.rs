@@ -268,13 +268,13 @@ mod tests {
             },
         );
 
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
+            Stratification::default(),
             adornments,
-            footprints: Map::new(),
-        };
+            Map::new(),
+        );
         let goal = Goal::new(
             vec![Literal::Positive(Atom::new("p", vec![Term::var("B")]))],
             vec![Var::new("B")],
@@ -467,13 +467,13 @@ mod tests {
             },
         );
 
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
+            Stratification::default(),
             adornments,
-            footprints: Map::new(),
-        };
+            Map::new(),
+        );
         let goal = Goal::new(
             vec![Literal::Positive(Atom::new("p", vec![Term::var("B")]))],
             vec![Var::new("B")],
@@ -614,13 +614,13 @@ mod tests {
                 ],
             },
         );
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
+            Stratification::default(),
             adornments,
-            footprints: Map::new(),
-        };
+            Map::new(),
+        );
         let goal = Goal::new(
             vec![Literal::Positive(Atom::new("p", vec![Term::var("B")]))],
             vec![Var::new("B")],

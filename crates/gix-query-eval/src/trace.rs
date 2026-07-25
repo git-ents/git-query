@@ -272,13 +272,13 @@ mod tests {
             ),
             "test",
         );
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
-            adornments: Map::new(),
-            footprints: Map::new(),
-        };
+            Stratification::default(),
+            Map::new(),
+            Map::new(),
+        );
         let goal = Goal::new(vec![pos("p", &["B"])], vec![Var::new("B")]);
         let rewritten = rewrite(&checked, &goal);
         let emitted = NemoProgram::emit(&rewritten).expect("emits");
@@ -348,13 +348,13 @@ mod tests {
             ),
             "test",
         );
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
-            adornments: Map::new(),
-            footprints: Map::new(),
-        };
+            Stratification::default(),
+            Map::new(),
+            Map::new(),
+        );
         let goal = Goal::new(
             vec![pos("reach", &["X", "Z"])],
             vec![Var::new("X"), Var::new("Z")],
@@ -428,13 +428,13 @@ mod tests {
             ),
             "test",
         );
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
-            adornments: Map::new(),
-            footprints: Map::new(),
-        };
+            Stratification::default(),
+            Map::new(),
+            Map::new(),
+        );
         let goal = Goal::new(vec![pos("active", &["M"])], vec![Var::new("M")]);
         let rewritten = rewrite(&checked, &goal);
         let emitted = NemoProgram::emit(&rewritten).expect("emits");
@@ -494,13 +494,13 @@ mod tests {
             ),
             "test",
         );
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
-            adornments: Map::new(),
-            footprints: Map::new(),
-        };
+            Stratification::default(),
+            Map::new(),
+            Map::new(),
+        );
         let goal = Goal::new(vec![pos("p", &["B"])], vec![Var::new("B")]);
         let rewritten = rewrite(&checked, &goal);
         let emitted = NemoProgram::emit(&rewritten).expect("emits");

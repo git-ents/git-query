@@ -113,13 +113,13 @@ fn transitive_closure_is_a_set_and_a_cycle_terminates() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
     let goal = Goal::new(
         vec![pos("tc", &["X", "Y"])],
         vec![Var::new("X"), Var::new("Y")],
@@ -179,13 +179,13 @@ fn stratified_negation_one_stratum() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
     let goal = Goal::new(vec![pos("active2", &["M"])], vec![Var::new("M")]);
     let facts = StubTable::new()
         .with(
@@ -233,13 +233,13 @@ fn stratified_negation_across_three_strata() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
     let facts = StubTable::new()
         .with(
             gix_query_ir::PredicateKey::new("c3", 1),
@@ -296,13 +296,13 @@ fn a_retraction_shaped_update_has_no_state_bleed() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
     let goal = Goal::new(vec![pos("reviewer3", &["M"])], vec![Var::new("M")]);
     let base_members = vec![vec![sym("alice")], vec![sym("bob")]];
     let base_signers = vec![vec![sym("alice")], vec![sym("bob")]];
@@ -397,13 +397,13 @@ fn multi_clause_predicates_and_constants_in_heads() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
     let facts = StubTable::new()
         .with(
             gix_query_ir::PredicateKey::new("weak4", 1),
@@ -471,13 +471,13 @@ fn a_join_with_an_inequality_comparison() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
     let goal = Goal::new(
         vec![pos("ambiguous5", &["A", "R"])],
         vec![Var::new("A"), Var::new("R")],
@@ -525,13 +525,13 @@ fn ordering_comparisons_hold_on_integers() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
     let goal = Goal::new(
         vec![pos("after6", &["A", "B"])],
         vec![Var::new("A"), Var::new("B")],
@@ -563,7 +563,7 @@ fn ordering_comparisons_hold_on_integers() {
 /// real.
 fn unrewritten(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
     let mut program = Program::new();
-    for rule in checked.program.rules() {
+    for rule in checked.program().rules() {
         program.push_rule(
             Rule {
                 head: rule.head.clone(),
@@ -609,7 +609,7 @@ fn unrewritten(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
     // fed only the ones a small test program touches would be asked for
     // `commit`, `anchor`, and every other host relation it never mentioned.
     let referenced = checked
-        .program
+        .program()
         .rules()
         .iter()
         .flat_map(|r| r.body.iter())
@@ -619,7 +619,7 @@ fn unrewritten(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
     let eager = referenced
         .filter(|key| {
             checked
-                .registry
+                .registry()
                 .predicate(key)
                 .is_some_and(|e| e.class.is_edb())
         })
@@ -663,13 +663,13 @@ fn rewritten_and_unrewritten_agree_on_the_demanded_subset() {
         ),
         "test",
     );
-    let checked = CheckedProgram {
+    let checked = CheckedProgram::assemble(
         program,
         registry,
-        stratification: Stratification::default(),
-        adornments: Map::new(),
-        footprints: Map::new(),
-    };
+        Stratification::default(),
+        Map::new(),
+        Map::new(),
+    );
 
     let facts = StubTable::new().with(
         gix_query_ir::PredicateKey::new("edge7", 2),

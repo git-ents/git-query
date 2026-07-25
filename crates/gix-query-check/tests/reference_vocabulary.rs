@@ -89,7 +89,7 @@ fn the_corrected_vocabulary_infers_rev_threading_exactly_as_the_doc_says() {
     let checked = checked_program(CORRECTED_VOCABULARY).expect("validates");
     let required = |name: &str, arity: usize| {
         checked
-            .registry
+            .registry()
             .predicate(&gix_query_ir::PredicateKey::new(name, arity))
             .and_then(gix_query_ir::PredicateEntry::always_required_bound)
             .unwrap_or_else(|| panic!("{name}/{arity} should be registered"))

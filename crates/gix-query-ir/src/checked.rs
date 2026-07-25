@@ -128,21 +128,77 @@ impl Footprint {
 /// invalidation the frozen-IR gate exists to prevent. A `CheckedProgram` also
 /// carries a type-level promise the loose form cannot: a `Registry` reached
 /// through here has had mode and type inference run, so no consumer has to ask.
+/// The fields are private, and there is no public constructor. That is the
+/// whole point: "produced by the validator and by nothing else" has to be a
+/// property of the type rather than a sentence in a doc comment, or a consumer
+/// can assemble one from `Program::new()` and three `Default`s and hand it to
+/// the evaluator, which will rewrite and run it as though every pass had
+/// passed. Construction goes through [`CheckedProgram::assemble`], which is
+/// hidden from the documentation and named so that calling it from anywhere
+/// but `gix-query-check` reads as the mistake it is.
 #[derive(Debug, Clone)]
 pub struct CheckedProgram {
-    /// The rules, in program order.
-    pub program: Program,
-    /// The registry, with every derived predicate's modes and types filled in.
-    pub registry: Registry,
-    /// The stratum assignment.
-    pub stratification: Stratification,
-    /// Per-rule adornments, keyed by id rather than position.
-    pub adornments: BTreeMap<RuleId, RuleAdornments>,
-    /// Per-predicate transitive footprints.
-    pub footprints: BTreeMap<PredicateKey, Footprint>,
+    program: Program,
+    registry: Registry,
+    stratification: Stratification,
+    adornments: BTreeMap<RuleId, RuleAdornments>,
+    footprints: BTreeMap<PredicateKey, Footprint>,
 }
 
 impl CheckedProgram {
+    /// Assemble the result of a completed validation run.
+    ///
+    /// Not part of the supported surface. `gix-query-check` is the only
+    /// caller, and Rust has no way to say so across a crate boundary short of
+    /// a sealed trait whose ceremony would exceed its value here.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn assemble(
+        program: Program,
+        registry: Registry,
+        stratification: Stratification,
+        adornments: BTreeMap<RuleId, RuleAdornments>,
+        footprints: BTreeMap<PredicateKey, Footprint>,
+    ) -> Self {
+        Self {
+            program,
+            registry,
+            stratification,
+            adornments,
+            footprints,
+        }
+    }
+
+    /// The rules, in program order.
+    #[must_use]
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
+    /// The registry, with every derived predicate's modes and types filled in.
+    #[must_use]
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// The stratum assignment.
+    #[must_use]
+    pub fn stratification(&self) -> &Stratification {
+        &self.stratification
+    }
+
+    /// Every rule's adornments, keyed by id rather than position.
+    #[must_use]
+    pub fn all_adornments(&self) -> &BTreeMap<RuleId, RuleAdornments> {
+        &self.adornments
+    }
+
+    /// Every predicate's transitive footprint.
+    #[must_use]
+    pub fn all_footprints(&self) -> &BTreeMap<PredicateKey, Footprint> {
+        &self.footprints
+    }
+
     /// The footprint of `key`, empty when the predicate reads nothing.
     #[must_use]
     pub fn footprint(&self, key: &PredicateKey) -> Option<&Footprint> {

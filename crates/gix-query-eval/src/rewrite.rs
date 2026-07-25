@@ -338,7 +338,7 @@ impl<'a> Builder<'a> {
 /// Rewrite `checked` against `goal`, producing the program
 /// [`crate::lower`] emits and [`crate::demand`] drives.
 ///
-/// `checked.adornments` must already cover every rule in `checked.program`
+/// [`CheckedProgram::adornments`] must already cover every rule in the program
 /// -- true of anything `gix-query-check`'s pass 8 actually produced, and a
 /// contract test fixtures in this crate must uphold by hand, since that pass
 /// is not this crate's to call. A rule with no entry is treated as fully
@@ -346,9 +346,9 @@ impl<'a> Builder<'a> {
 /// unsound, so a missing entry degrades gracefully rather than panicking.
 #[must_use]
 pub fn rewrite(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
-    let mut builder = Builder::new(&checked.registry);
+    let mut builder = Builder::new(checked.registry());
 
-    for (id, rule) in checked.program.rules().iter().enumerate() {
+    for (id, rule) in checked.program().rules().iter().enumerate() {
         let id = RuleId(id);
         let default_head = Adornment::new(ArgSet::empty(), rule.head.terms.len());
         let default_body: Vec<Adornment> = rule
@@ -498,14 +498,21 @@ mod tests {
             id
         }
 
+        /// Replace one rule's adornments, for the cases where the
+        /// left-to-right reconstruction above is not what the test wants to
+        /// exercise.
+        fn adorn(&mut self, id: RuleId, adornments: gix_query_ir::RuleAdornments) {
+            self.adornments.insert(id, adornments);
+        }
+
         fn checked(self) -> CheckedProgram {
-            CheckedProgram {
-                program: self.program,
-                registry: self.registry,
-                stratification: Stratification::default(),
-                adornments: self.adornments,
-                footprints: BTreeMap::new(),
-            }
+            CheckedProgram::assemble(
+                self.program,
+                self.registry,
+                Stratification::default(),
+                self.adornments,
+                BTreeMap::new(),
+            )
         }
     }
 
@@ -721,9 +728,8 @@ mod tests {
         );
         // Hand-fix the adornment: bind is (+,+,-,-,-,-,-).
         let checked_program = {
-            let mut cp = f.checked();
             let id = RuleId(0);
-            cp.adornments.insert(
+            f.adorn(
                 id,
                 gix_query_ir::RuleAdornments {
                     rule: id,
@@ -731,7 +737,7 @@ mod tests {
                     body: vec![Adornment::new(ArgSet::from_indices([0, 1]), 7)],
                 },
             );
-            cp
+            f.checked()
         };
         let goal = Goal::new(
             vec![Literal::Positive(Atom::new("out", vec![Term::var("B")]))],

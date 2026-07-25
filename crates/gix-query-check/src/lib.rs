@@ -98,13 +98,13 @@ pub fn check(program: &Program, registry: &Registry) -> Result<CheckedProgram, E
         return Err(errors);
     }
 
-    Ok(CheckedProgram {
-        program: program.clone(),
-        registry: working,
-        stratification: stratify.stratification,
+    Ok(CheckedProgram::assemble(
+        program.clone(),
+        working,
+        stratify.stratification,
         adornments,
         footprints,
-    })
+    ))
 }
 
 /// Check a standalone goal -- a tier-1, tier-2, or tier-3 query -- against an
@@ -128,14 +128,19 @@ pub fn check_goal(goal: &Goal, checked: &CheckedProgram) -> Result<GoalAdornment
     let mut errors = Errors::new();
 
     pass1_symbols::check_goal_body(&goal.body, &mut errors);
-    pass2_resolve::check_goal_body(&goal.body, &checked.program, &checked.registry, &mut errors);
+    pass2_resolve::check_goal_body(
+        &goal.body,
+        checked.program(),
+        checked.registry(),
+        &mut errors,
+    );
     // A scratch clone: type inference may still resolve a leftover `Infer`
     // slot from this goal's call sites, but that inference must never leak
     // into the shared, already-frozen `CheckedProgram`.
-    let mut scratch = checked.registry.clone();
+    let mut scratch = checked.registry().clone();
     pass3_types::check_goal_body(&goal.body, &mut scratch, &mut errors);
     pass4_range::check_goal(goal, &mut errors);
-    let adornments = pass8_modes::check_goal(goal, &checked.registry, &mut errors);
+    let adornments = pass8_modes::check_goal(goal, checked.registry(), &mut errors);
 
     if !errors.is_empty() {
         return Err(errors);

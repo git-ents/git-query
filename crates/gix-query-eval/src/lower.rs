@@ -302,13 +302,13 @@ mod tests {
             ),
             "test",
         );
-        let checked = CheckedProgram {
+        let checked = CheckedProgram::assemble(
             program,
             registry,
-            stratification: Stratification::default(),
-            adornments: Map::new(),
-            footprints: Map::new(),
-        };
+            Stratification::default(),
+            Map::new(),
+            Map::new(),
+        );
         let goal = Goal::new(vec![pos("p", &["M"])], vec![Var::new("M")]);
         crate::rewrite::rewrite(&checked, &goal)
     }
