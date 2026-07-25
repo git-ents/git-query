@@ -1,0 +1,16 @@
+[package]
+name = "gix-query-kernel"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "The frozen compiled denial rules that govern who may push a rule ref, plus the differential test oracle."
+
+[dependencies]
+ascent = "0.8"
+
+[dev-dependencies]
+gix-query-ir = { path = "../gix-query-ir" }
+gix-query-parse = { path = "../gix-query-parse" }
+gix-query-check = { path = "../gix-query-check" }
+gix-query-eval = { path = "../gix-query-eval" }
+proptest = "1"

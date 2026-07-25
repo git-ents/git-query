@@ -1,0 +1,16 @@
+[package]
+name = "gix-query-eval"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "The magic-set rewrite and the stratified Datalog evaluators, naive and semi-naive."
+
+[dependencies]
+gix-query-ir = { path = "../gix-query-ir" }
+thiserror = "2"
+
+[dev-dependencies]
+gix-query-check = { path = "../gix-query-check" }
+gix-query-parse = { path = "../gix-query-parse" }
+proptest = "1"
+rstest = "0.26"

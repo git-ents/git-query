@@ -1,0 +1,12 @@
+[package]
+name = "gix-query-ir"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "The intermediate representation, signature registry, and traits every other git-query crate codes against."
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+rstest = "0.26"

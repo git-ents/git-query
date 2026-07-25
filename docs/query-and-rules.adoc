@@ -1,0 +1,521 @@
+= Query and Rules
+
+== Engine
+
+The engine is a hand-written stratified, semi-naive Datalog interpreter with
+mode-driven join and index selection, over a git-backed EDB. Everything else --
+parser, validator, CLI, cache -- is frontend, host binding, and packaging around
+that engine.
+
+* No off-the-shelf engine fits. A compile-time engine cannot load rule modules
+  from refs at runtime, which is the entire feature; an embedded database
+  supplies neither the mode system, nor stratification as specified here, nor
+  footprints, nor derivation trees.
+* Mode discipline is implemented by a *magic-set transformation* on the IR
+  before evaluation. Semi-naive evaluation is bottom-up and mode discipline is
+  top-down; they do not compose without it. Demand for bound arguments becomes
+  explicit `magic_` relations, rules are guarded by their demand, and plain
+  bottom-up evaluation then touches only the demanded portion of each relation.
+* Body literals are evaluated in *author order*. That fixes the
+  sideways-information-passing strategy, so every literal's adornment is
+  determined by the source text -- no search, no cost model.
+* Stratification is rechecked after the rewrite as an internal assertion. A
+  failure there is an engine bug, not a user error.
+* The `magic_` prefix is reserved. The parser rejects a rule module that defines
+  a predicate under it, because such a module would capture an engine relation
+  and corrupt demand propagation.
+* Derivation trees are reported over the *source* rules. Every generated rule
+  carries an origin back-reference, and that back-reference includes a
+  body-literal map: a demand guard is injected at the front of a rewritten body,
+  so every following literal shifts by one, and a tree indexed by rewritten
+  offsets would misattribute every step it prints. `magic_` relations never
+  appear in output.
+
+== Anchor
+
+* An anchor is an immutable identity. Its location is derived, never materialized.
+* `bind(+Anchor, +Rev, -Blob, -Start, -End, -Position, -Content)`.
+* Position and content are orthogonal axes, and a flat status cannot carry both.
++
+--
+* `Position` is one of `same`, `moved`, `lost`.
+* `Content` is one of `intact`, `edited`, `none`. `none` occurs only with
+  `Position = lost`.
+--
+* The axis vocabulary is a `gix-anchor` export. It is not redefined here.
+* `lost` yields the sentinel blob `none`, which joins against no blob relation.
+* Multiple candidate locations yield one tuple each. *Ambiguity is not a
+  status*; it is a property of the result set, and it is derivable in the
+  language (see `ambiguous/2` below). A candidate that is intact at a new path
+  is still individually intact, and stamping it `ambiguous` would overwrite that.
+* Projection is evaluation of `bind` at a later rev.
+* A claim is an anchor with a signed body.
+
+=== Two entry points, and why
+
+Projection with a fallback to context-based search depends on ambient garbage
+collection state, which is neither content-addressed nor a ref, and therefore
+cannot appear in a cache key. For a renamed file the fallback reports a deletion
+where exact projection reports a relocation -- the difference between a review
+carrying forward and a review being destroyed, decided by whether maintenance
+ran.
+
+|===
+| builtin | backed by | in gates
+
+| `bind` | exact projection | allowed
+| `bind_fuzzy` | context-based projection | rejected by the validator
+|===
+
+The fallback becomes something a rule author opts into in the rule text, which
+is in the cache key. Forbidding `bind_fuzzy` in gate rules stands on its own
+merits: an admission decision should not turn on a best-scoring-window heuristic.
+
+== Targets
+
+* Target syntax is git object-name grammar: `HEAD:src/lib.rs`, `A...B`.
+* Pairs are a binary form, not a suffix.
+* Line spans are not object names; spans live in the claim body.
+* Queries accept rev expressions; storage binds resolved OIDs.
+* Spans are *lines*, not bytes. `line(+Blob, -N)` is the unit of region
+  reasoning and there is no `byte/2` anyone would enumerate.
+
+== Triggers
+
+* An effect watches a derived value. Refname watching is the degenerate case, `resolve(refname)`.
+* Anchor-movement watching is `bind(a, ·)`.
+* The effect graph is built from predicate dependency footprints.
+* Fork-bomb freedom holds given three conditions:
++
+--
+. the effect graph is acyclic;
+. an executor may write only its declared results namespace;
+. a result ref name is a function of the trigger tuple.
+--
+* Only the first is an analysis problem, and only the first lives here. The
+  acyclicity check is exported over footprints; enforcement of the other two
+  belongs to the forge.
+* The predicate-level dependency graph is coarser than a glob-intersection test,
+  so the check is *sound and incomplete*: it can deny a program that would have
+  been fine, and it can never admit a cycle. Incompleteness surfaces as a
+  spurious denial, which is debuggable. The reverse would be a fork bomb.
+* Work per push is then bounded by the number of effects.
+* Non-termination inside a run is bounded by timeout, not by analysis.
+
+== Language
+
+Datalog. Set semantics. No function symbols. Variables are uppercase-initial,
+constants lowercase-initial, `_` is anonymous. That syntax is the same in rule
+files and in command-line goals; there is no second variable sigil.
+
+=== EDB -- host, repo-backed, enumerable
+
+----
+commit(+Rev)             parent(+Child, Parent)
+tree_entry(+Rev, Path, Blob)       author(+Commit, Member)
+member(M)                revoked(M)
+claim(C)  kind(C, K)  target(C, Obj)  signer(C, M)  verdict(C, V)
+anchor(A)                line(+Blob, N)
+----
+
+Modes are shown where an argument is required-bound. An EDB predicate whose
+extension depends on an unbound rev-like argument is both unaffordable and
+uncacheable: `tree_entry(Rev, _, B)` with `Rev` free ranges over an ill-defined
+universe of commits, and there is no finite ref set to snapshot for it either.
+Requiring `+Rev` fixes both at once. Mode discipline and cache determinacy are
+the same property viewed from two directions.
+
+`line/2` is required-bound on the blob for the same reason. A footgun documented
+in prose is a footgun; one registry line converts a repo-sized materialization
+into a validation error.
+
+`commit/1` is required-bound too, and it is the load-bearing one: every `+Rev`
+in the reference vocabulary's mode table traces back to this single
+declaration. Were it enumerable, `reach`, `introduced`, `authored`, and
+`mergeable` would all infer all-free, `git query run mergeable` with no `--rev`
+would validate, and mode inference would demonstrate nothing about
+affordability.
+
+`parent/2` and `author/2` are required-bound on the commit, which is what makes
+an ancestry walk a walk. This is the same fact as their being content-addressed:
+*content-addressed is a claim about a bound call*. Reading `parent/2` all-free
+is the whole commit graph, whose extension moves whenever any ref moves -- with
+nothing in the footprint to notice, so the answer would be cached and stale. A
+content-addressed predicate therefore may not offer an enumerating mode, and the
+registry rejects one that does.
+
+The claim and member relations stay enumerable, because their namespaces are
+finite ref globs and reading one whole is affordable. `reviewers(M) :- signer(C, M).`
+must validate.
+
+*EDB predicates carry a mode set, not a mode vector.* `member/1` is legitimately
+called free (enumerate the namespace) and bound (membership test). Both are
+affordable and both are legal, so the registry stores a set of supported mode
+vectors per EDB predicate. IDB predicates instead carry a single inferred
+required-bound set.
+
+Each EDB predicate also declares its *backing source*, which pass 7 and the
+cache key both read:
+
+|===
+| backing | example | contributes to the cache key
+
+| `RefGlob(g)` | `member/1` -> `refs/meta/members/*` | resolved `(refname -> OID)` pairs
+| `ContentAddressed` | `tree_entry/3` given bound `Rev` | nothing; the OID is already in the goal
+| `AdHoc` | anything from `--edb name=file` | the run's ad-hoc EDB digest
+|===
+
+=== EDB -- ad hoc
+
+* `--edb name=file` supplies base facts for one run.
+
+=== Builtins -- moded, non-enumerable
+
+----
+bind(+Anchor, +Rev, -Blob, -Start, -End, -Position, -Content)
+bind_fuzzy(+Anchor, +Rev, -Blob, -Start, -End, -Position, -Content)
+----
+
+Comparisons are builtins too, and the validator's range-restriction rule already
+refers to them, so they are declared rather than assumed:
+
+|===
+| builtin | modes | types | mints
+
+| `=`, `!=` | `(+, +)` | any two scalars of the same registry type | no
+| `<`, `\<=`, `>`, `>=` | `(+, +)` | `int` only | no
+|===
+
+All-bound only: comparisons are filters, never generators. `=` is a filter, not
+a unification -- a Prolog-shaped syntax invites the opposite assumption, and
+unification would reintroduce value invention through the back door.
+Ordering is `int`-only, so no rule's meaning can depend on hash bytes.
+
+Every builtin declares six properties, and the validator assumes them:
+
+|===
+| property | meaning
+
+| `total` | defined on every well-moded input
+| `deterministic` | same input, same output, forever
+| `pure` | no observable effect
+| `finite` | finite output tuples per bound input tuple
+| `mints` | produces values not in the active domain
+| `version` | implementation version, bumped on any behavior change
+|===
+
+`finite` is what makes a multi-candidate `bind` safe: the count is bounded per
+input. A builtin that is `mints` and not `finite` breaks termination even
+outside a recursive SCC.
+
+`mints` and `version` are *declared, never inferred*. `mints` is a claim about
+the implementation, not the signature -- an all-output mode might return values
+it received (projection) or values it constructed (minting), and the signature
+cannot tell you which. `version` exists because a builtin whose answer changes
+when its backing heuristics improve is not a different builtin -- same name,
+same signature, same modes -- so it must be carried as data next to those.
+
+*Presentation is not language.* Anything whose output depends on ambient repo
+state that is not a ref, or whose only consumer is a human reading a terminal,
+belongs in the formatter. Object-id abbreviation is the clear case: the length
+git chooses depends on how many objects are in the object database, so the same
+oid abbreviates differently before and after a fetch with no ref moved and no
+rule changed. That is unkeyed state, and it cannot be keyed short of putting the
+whole odb in the footprint. It is a `--abbrev` flag, not a builtin. Span
+coalescing and location rendering move for the same reason. The language's job
+is to be cacheable.
+
+*No aggregates.* Aggregation needs a stratification story, a mode story, and a
+termination story of its own. None are specified, so the feature does not exist.
+
+=== Validation
+
+. No value invention: no function symbols, no arithmetic or concatenation
+  producing head terms. The ban extends to builtin arguments, or it is not a ban.
+. Predicate resolution: every body predicate is host EDB or defined in the program. Base predicates are not redefinable. Cross-module references resolve against `pub` surface only.
+. Arity and types against the signature registry.
+. Range restriction: every head variable, every variable under negation, and every variable in a comparison appears in a positive body literal.
+. Stratification: no negative edge within an SCC.
+. Shape caps: max literals, variables, and rules; body literals unjoined to the rest of the body are rejected.
+. Footprint: transitive closure to base predicates *and to builtins*. Consumed by
+  the effect-graph acyclicity check, by the cache key, by the `bind_fuzzy`
+  prohibition, and by the ambiguity lint -- four consumers, one traversal. Both
+  of the latter two are defeated by a one-line wrapper predicate if the
+  footprint stops at predicate names.
+. Mode inference: modes propagate from builtins into IDB predicates. Calling a
+  predicate with a required-bound argument free is a validation error.
++
+--
+* Checking is left to right over the body *as written*. There is no reordering
+  and no search: a language that makes you declare `pub`, declare modes, and
+  declare backing sources should not silently rewrite your rule. The error names
+  the unbound variable and the literal that needed it.
+* Inference is itself a least fixpoint: start every IDB argument free, propagate
+  boundness from builtins and bound call sites to convergence.
+* A predicate's required-bound set is the *union* over its rules, not the
+  intersection. If any rule for `p` needs argument 2 bound, every caller of `p`
+  must bind argument 2.
+* A reordering that would have bound more variables earlier is a lint, not a
+  rewrite.
+--
+. Minting confinement: a builtin declared `mints` may not appear in a recursive
+  SCC, checked over the SCC decomposition pass 5 already computes.
+
+Passes 1--9 imply termination. Passes 1--8 alone do not: pass 1 is syntactic,
+and the builtins are where the semantics leak. Cost is governed separately by
+row, iteration, and time caps.
+
+Termination is not affordability. Data complexity is PTIME but combined
+complexity is EXPTIME-complete, so a five-variable body over a million blobs
+terminates long after everyone involved is dead. Mode discipline is the primary
+affordability tool, and range scoping (`--in A..B`) is correctness-adjacent
+rather than a convenience.
+
+== Rule modules
+
+* One ref per module: `refs/meta/rules/<name>`.
+* The active program is the union over `refs/meta/rules/*`.
+* Program identity is the snapshot of (ref -> OID).
+* Names are qualified: `review.reviewed`.
+* `pub` marks exported predicates; unmarked predicates are private.
+* Validation is whole-program, at pre-receive, against every rule ref at its current tip.
+* The module's *source text* is what is stored. The IR is derived.
+* Every rule push also advances `refs/meta/rules-epoch`, and pushes both with
+  `git push --atomic`. Concurrent rule pushes then conflict by construction on
+  the epoch's compare-and-swap; the loser retries. Whole-program validation
+  already reads every module tip, so serialization costs nothing it was not
+  already paying.
+* Multi-module changes push with `git push --atomic`.
+* `git query rules api <module>` diffs declared surface against observed references.
+
+----
+git query rules add review ./review.dl
+git query rules check review
+----
+
+== Review vocabulary
+
+----
+pub reviewed(B)
+pub unreviewed(Rev, B)
+pub unreviewed_line(Rev, Path, B, N)
+pub mergeable(Rev)
+
+active_member(M) :- member(M), !revoked(M).
+review(C)        :- claim(C), kind(C, review).
+
+approved_by(B, M) :- review(C), target(C, B), signer(C, M),
+                     verdict(C, approve), active_member(M).
+rejected(B)       :- review(C), target(C, B), verdict(C, reject),
+                     signer(C, M), active_member(M).
+reviewed(B)       :- approved_by(B, _).
+
+reach(Rev, Rev) :- commit(Rev).
+reach(Rev, C)   :- reach(Rev, X), parent(X, C).
+
+has_parent(C)            :- parent(C, _).
+introduced(Rev, B, C)    :- reach(Rev, C), tree_entry(C, P, B),
+                            parent(C, Pc), !tree_entry(Pc, P, B).
+introduced(Rev, B, C)    :- reach(Rev, C), tree_entry(C, P, B), !has_parent(C).
+authored(Rev, B, M)      :- introduced(Rev, B, C), author(C, M).
+self_approved(Rev, B, M) :- authored(Rev, B, M), approved_by(B, M).
+
+carries(same,  intact).
+carries(moved, intact).
+
+reviewed_span(Rev, B, S, E) :- review(C), target(C, A), anchor(A),
+                               verdict(C, approve), signer(C, M),
+                               active_member(M),
+                               bind(A, Rev, B, S, E, Pos, Con),
+                               carries(Pos, Con).
+
+ambiguous(A, Rev) :- bind(A, Rev, B1, _, _, _, _),
+                     bind(A, Rev, B2, _, _, _, _), B1 != B2.
+
+reviewed_line(Rev, B, N)      :- reviewed_span(Rev, B, S, E), line(B, N),
+                                 N >= S, N <= E.
+unreviewed_line(Rev, P, B, N) :- tree_entry(Rev, P, B), line(B, N),
+                                 !reviewed_line(Rev, B, N).
+
+unreviewed(Rev, B) :- tree_entry(Rev, _, B), !reviewed(B).
+blocked(Rev)       :- unreviewed(Rev, _).
+blocked(Rev)       :- tree_entry(Rev, _, B), rejected(B).
+blocked(Rev)       :- tree_entry(Rev, _, B), self_approved(Rev, B, _).
+mergeable(Rev)     :- commit(Rev), !blocked(Rev).
+----
+
+Inferred modes, which `git query predicates` surfaces and pass 8 produces:
+
+|===
+| predicate | mode | why
+
+| `reviewed/1`, `approved_by/2`, `rejected/1` | all free | enumerable from the claim namespace
+| `reach/2`, `introduced/3`, `authored/3` | `+Rev` | `commit/1` is required-bound
+| `self_approved/3`, `blocked/1`, `unreviewed/2` | `+Rev` | `tree_entry` is `+Rev`
+| `reviewed_span/4`, `reviewed_line/3`, `unreviewed_line/4` | `+Rev` | `bind` is `+Rev`, `line` is `+Blob`
+| `ambiguous/2` | `+A, +Rev` | `bind` is `+Anchor, +Rev`
+| `mergeable/1` | `+Rev` | via `blocked`
+|===
+
+Three things this program demonstrates, each worth stating.
+
+*Rev threading is what makes it well-moded.* Reachability from a bound rev is
+the only way to get a commit into a bound position. Without it, `introduced`
+asks for an inverted blob -> commit index -- "which commits contain this blob" --
+which does not exist by design, because it is unbounded over history and
+maintaining it would mean a write-side index the content-addressed approach
+avoids. The mode system catches that statically rather than as a query that runs
+for an hour.
+
+*Root commits introduce blobs.* The second `introduced` clause is not
+redundant. A single clause requiring `parent(C, Pc)` means nothing is ever
+introduced in a root commit, so every blob in an initial import is silently
+un-`authored` and therefore never `self_approved`.
+
+*Well-moded is not affordable.* `introduced` now scans every tree at every
+ancestor of `Rev`. The scoped form is what `--in A..B` compiles to:
+
+----
+reach_in(Base, Tip, Tip) :- commit(Tip).
+reach_in(Base, Tip, C)   :- reach_in(Base, Tip, X), parent(X, C), !reach(Base, C).
+----
+
+It stratifies cleanly: `reach_in` has a negative edge to `reach`, and `reach`
+does not depend on `reach_in`.
+
+* Review-carry policy is the contents of `carries/2`. Two axes rather than one
+  is what lets policy say the thing it wanted to say -- a span that moved but is
+  textually intact should almost always carry, a span that stayed put but was
+  edited should almost never, and `carries(moved, edited)` is the knob that a
+  flat status could not express.
+* Blob-granular `reviewed` is stable under content addressing. Span-granular
+  review is recomputed per rev, served by the incremental cache ref.
+* Uncovered regions are per-line, by negation. Coalescing consecutive uncovered
+  lines back into spans is presentation, and lives in the formatter.
+
+== CLI
+
+One binary: `git-query`, invoked as `git query`. There is no `git-rules` and no
+`git-explain`; they are subcommands.
+
+----
+# 1. apply a named predicate; bound args filter, free args become columns
+git query run unreviewed
+git query run approved-by --signer joey
+git query run bind --anchor a1f3 --rev HEAD
+
+# 2. subject plus filters
+git query run blob --with unreviewed --without approved-by:joey --in main..HEAD
+
+# 3. raw goal
+git query run --goal 'reviewed(B), !approved_by(B, joey)' --select B
+
+git query explain '<tuple>'
+git query rules add|check|api|list
+git query predicates
+----
+
+The `run` verb is not ceremony. Tier 1 applies a *user-defined* predicate name
+as the first positional argument, so without it every rule module competes with
+the subcommand namespace: a module defining `rules` or `explain` would be
+shadowed, and adding a subcommand later would silently steal a working query.
+`run` puts predicate names where they can be arbitrary.
+
+Tier 2 covers conjunctions of filters over one subject. Joins across two free
+variables use tier 3. Tier 2 fills a filter predicate's required-bound arguments
+from the ambient flags (`--rev`, `--in`) and errors when it cannot.
+
+`--without` is negation composed at the command line, and the design should say
+so rather than claiming the CLI expresses none. It is safe by construction: the
+subject variable is bound by the tier-2 subject, so range restriction holds, and
+the negated predicate is already stratified within the program, so no new
+stratum appears. The invariant is *the CLI may compose negated literals only
+over the tier-2 subject variable, which is always bound*.
+
+Flags on `run`: `--rev` (default `HEAD`), `--in A..B`, `--edb name=file`,
+`--format table|tsv|json`, `--order`, `--abbrev[=<n>]`. `explain` takes `--rev`
+and `--format`.
+
+`git query predicates` lists callable predicates, host and repo, with signatures
+and modes.
+
+=== Results
+
+* A result is a relation: an unordered, deduplicated set of tuples.
+* Columns are the free arguments in signature order. That order is the tsv contract.
+* Column types come from the registry: `rev`, `oid`, `path`, `member`,
+  `position`, `content`, `int`, `symbol`. `status` is gone -- the two axes
+  replaced it -- and so is `loc`, which was a constructed term.
+* `position` and `content` are closed domains, not open identifier spaces. A
+  predicate defined only by facts, such as `carries/2`, takes its argument types
+  from unification with its call site plus those domains; the registry therefore
+  carries an explicit "to be inferred" slot, without which the type pass must
+  either reject the reference vocabulary or silently skip every derived
+  predicate.
+* Values are identifiers, never content. Abbreviation is applied at format time
+  to `oid`-typed columns and never enters a join, a head, or a cache key.
+* No streaming; the fixpoint materializes before the first row is emitted.
+* Truncation at any cap is announced by a distinct exit status.
+* Exit codes: `0` rows, `1` no rows, `2` error, `3` truncation.
+* *Gates must treat `3` as failure.* A truncated relation read as an answer
+  over-approves when the gate asks "is anything blocked?" and under-approves
+  when it asks "is everything reviewed?", so there is no safe default
+  interpretation, only a safe refusal. `2` and `3` are both failure for gate
+  purposes; they differ only in what the operator does next.
+
+=== Cache key
+
+----
+key = H( rules snapshot OID,
+         canonical goal,
+         footprint digest,
+         builtin registry digest,
+         edb digest )
+----
+
+* `rev` does not determine the host EDB. Members, claims, and verdicts are
+  backed by refs that move independently of any code rev, so keying on `rev`
+  returns a stale answer after a revocation -- a stale gate verdict, which is
+  the worst place for it. Key on the footprint instead, which is also *narrower*
+  in the common case: a query touching only `tree_entry` does not invalidate
+  when a member is revoked.
+* A ref *namespace* has no object to point at, so the footprint is a digest, not
+  an OID:
++
+----
+footprint_digest = H( sorted glob patterns, NUL-delimited,
+                      then for each (refname, oid) in sorted-by-refname order:
+                        refname, 0x00, oid, 0x00 )
+----
++
+Sorted by full refname in byte order, NUL-delimited so no refname can forge a
+boundary. The glob patterns go in first because an absent namespace and an empty
+one must not collide. `rev` is one entry among the rest.
+* The goal is not a string. `reviewed(B)` and `reviewed( X )` are the same query
+  and must hit the same entry. The canonical form is the IR with variables
+  renumbered in first-occurrence order, whitespace and comments discarded, and
+  literals left *in author order* -- author order is semantically load-bearing,
+  so it must not be normalized away. Two goals share an entry iff they are
+  alpha-equivalent with identical literal order.
+* The builtin registry digest covers each builtin's name, signature, and
+  implementation version. Without it, improving a projection heuristic leaves
+  every cache entry silently stale across the upgrade, with rules OID, footprint
+  and EDB digest all unchanged. A cache over a pure function is only as sound as
+  the purity claim, and "pure" has to mean pure with respect to the
+  implementation as well as the inputs.
+
+=== Explain
+
+`git query explain <goal>` takes one tuple and returns a derivation tree,
+annotated with the rules-ref OID and the source ref of each base fact.
+
+* Provenance is recorded inside the join loop, behind a runtime flag: off for
+  gates and bulk queries, on for `explain`. It cannot be reconstructed
+  afterward from a materialized relation, because set semantics has already
+  discarded the multiplicity that would tell you which pairing produced which
+  tuple.
+* Scope: positive goals, plus negation witnesses under stratification. General
+  why-not goals are refused, and the refusal says why no finite witness exists.
+* Negation leaves are annotated with the program snapshot and footprint digest
+  that made them true, since "not provable" is only reproducible relative to
+  those.

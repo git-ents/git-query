@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/gix-query-ir",
+    "crates/gix-query-parse",
+    "crates/gix-query-check",
+    "crates/gix-query-eval",
+    "crates/gix-query-host",
+    "crates/gix-query-rules",
+    "crates/gix-query-kernel",
+    "crates/gix-query",
+    "crates/git-query",
+    "crates/test-support",
+]
+resolver = "3"

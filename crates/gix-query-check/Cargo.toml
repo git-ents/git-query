@@ -1,0 +1,14 @@
+[package]
+name = "gix-query-check"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "The nine validation passes: resolution, types, range restriction, stratification, caps, footprints, modes, minting confinement."
+
+[dependencies]
+gix-query-ir = { path = "../gix-query-ir" }
+thiserror = "2"
+
+[dev-dependencies]
+gix-query-parse = { path = "../gix-query-parse" }
+rstest = "0.26"
