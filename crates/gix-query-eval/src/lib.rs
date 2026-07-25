@@ -50,11 +50,16 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod demand;
+mod engine;
 mod error;
 mod lower;
 mod rewrite;
 mod symbol;
+#[cfg(test)]
+mod testutil;
 
+pub use demand::{CallLog, LoggedCall, LoopResult, run_to_fixpoint};
 pub use error::EvalError;
 pub use lower::{NemoProgram, NemoTables};
 pub use rewrite::{
