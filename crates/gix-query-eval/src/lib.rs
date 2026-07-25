@@ -51,10 +51,12 @@
 #![deny(missing_docs)]
 
 mod error;
+mod lower;
 mod rewrite;
 mod symbol;
 
 pub use error::EvalError;
+pub use lower::{NemoProgram, NemoTables};
 pub use rewrite::{
     DemandKind, DemandSite, RewrittenProgram, adorn_body, rewrite as rewrite_program,
 };
