@@ -179,12 +179,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = Fixture::init(dir.path().join("r"));
         let head = f.commit_file("a.txt", "a\n", "first");
-        f.update_ref("refs/meta/members/joey", &head);
+        // The leaf under `refs/meta/members/*` is a member's hex id
+        // (`gix-query-host`'s `member.rs` and `util.rs::parse_oid` both
+        // commit to this), not an arbitrary name, so the fixture uses one
+        // here rather than a literal like `joey` that no real member ref
+        // would ever hold.
+        let member = f.hash_object("joey");
+        let refname = format!("refs/meta/members/{member}");
+        f.update_ref(&refname, &head);
         let refs = f.refs();
         assert!(refs.windows(2).all(|w| w[0].0 <= w[1].0));
         assert!(
             refs.iter()
-                .any(|(name, oid)| name == "refs/meta/members/joey" && oid == &head)
+                .any(|(name, oid)| name == &refname && oid == &head)
         );
     }
 

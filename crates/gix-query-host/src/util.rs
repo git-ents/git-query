@@ -19,6 +19,21 @@ pub(crate) fn parse_oid(key: &PredicateKey, value: &Value) -> Result<gix::Object
     gix::ObjectId::from_hex(text.as_bytes()).map_err(|error| backend(key, error))
 }
 
+/// Parse `text` as a lowercase-hex object id, or `None` if it is not one.
+///
+/// A shared ref namespace is not a type boundary: `refs/meta/members/*` can
+/// hold a hand-written ref whose leaf is a name rather than a hex id, and a
+/// `Signer:` trailer can be written as a bare email rather than a resolved
+/// member id. Neither is a backend failure -- both are simply bad data at a
+/// boundary this crate does not control -- so a caller reading a namespace
+/// that might contain either uses this rather than [`parse_oid`], and treats
+/// `None` as "no such identity" rather than propagating an error that would
+/// fail every query touching the relation over one bad ref or one mistyped
+/// trailer.
+pub(crate) fn try_parse_hex(text: &[u8]) -> Option<gix::ObjectId> {
+    gix::ObjectId::from_hex(text).ok()
+}
+
 /// Box any backend failure as [`HostError::Backend`], attributed to `key`.
 pub(crate) fn backend(
     key: &PredicateKey,

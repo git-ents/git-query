@@ -10,7 +10,7 @@
 use gix::ObjectId;
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey};
 
-use crate::util::{backend, backend_boxed, backend_msg, fact, parse_oid, sym_oid};
+use crate::util::{backend, backend_boxed, backend_msg, fact, sym_oid, try_parse_hex};
 
 const MEMBERS_PREFIX: &str = "refs/meta/members/";
 
@@ -40,6 +40,13 @@ fn status(
 }
 
 /// Every member ref, as `(member, revoked, refname)`, sorted by member.
+///
+/// A ref whose leaf is not a hex id is a stray or hand-written ref sharing
+/// this namespace with the real ones -- `test-support`'s own generic `refs()`
+/// fixture writes exactly this shape -- and skipping it is what keeps one bad
+/// ref from failing every query that touches `member/1` or `revoked/1`. It is
+/// not this predicate's job to validate the namespace, only to read the part
+/// of it that is actually a member.
 fn all(
     repo: &gix::Repository,
     key: &PredicateKey,
@@ -55,7 +62,9 @@ fn all(
         let leaf = name
             .strip_prefix(MEMBERS_PREFIX)
             .ok_or_else(|| backend_msg(key, format!("{name} is outside its own prefix")))?;
-        let member = ObjectId::from_hex(leaf.as_bytes()).map_err(|error| backend(key, error))?;
+        let Some(member) = try_parse_hex(leaf.as_bytes()) else {
+            continue;
+        };
         let target = reference
             .peel_to_id()
             .map_err(|error| backend(key, error))?
@@ -79,7 +88,13 @@ pub(crate) fn member_facts<'a>(
 ) -> Result<Facts<'a>, HostError> {
     match bound.first() {
         Some(Some(v)) => {
-            let member = parse_oid(key, v)?;
+            // A bound value that is not hex at all -- a `Signer:` trailer
+            // written as a bare email, say -- can never name a member ref;
+            // "no such member" is the same honest answer a syntactically
+            // valid but unregistered id gets, not a backend failure.
+            let Some(member) = v.as_sym().and_then(|s| try_parse_hex(s.as_bytes())) else {
+                return Ok(Box::new(std::iter::empty()));
+            };
             let refname = format!("{MEMBERS_PREFIX}{member}");
             let out: Vec<Result<Fact, HostError>> = match status(repo, key, member)? {
                 Some(_) => vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))],
@@ -107,7 +122,9 @@ pub(crate) fn revoked_facts<'a>(
 ) -> Result<Facts<'a>, HostError> {
     match bound.first() {
         Some(Some(v)) => {
-            let member = parse_oid(key, v)?;
+            let Some(member) = v.as_sym().and_then(|s| try_parse_hex(s.as_bytes())) else {
+                return Ok(Box::new(std::iter::empty()));
+            };
             let refname = format!("{MEMBERS_PREFIX}{member}");
             let out: Vec<Result<Fact, HostError>> = match status(repo, key, member)? {
                 Some(true) => vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))],
@@ -186,6 +203,58 @@ mod tests {
         let stranger = f.hash_object("nobody");
 
         let out = member_facts(&repo, &key, &[Some(Value::sym(stranger))], false)
+            .expect("facts")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ok");
+        assert!(out.is_empty());
+    }
+
+    /// Reproduces the crash: `refs/meta/members/joey` is the exact refname
+    /// `test-support`'s own generic `refs()` fixture writes, and before this
+    /// fix `all()` propagated `ObjectId::from_hex`'s `InvalidHexEncodingLength`
+    /// as a `HostError::Backend` before enumerating a single real member --
+    /// every query touching `member/1` or `revoked/1` died over one stray
+    /// ref in a shared namespace.
+    #[test]
+    fn a_non_hex_ref_in_the_members_namespace_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        let active = register(&f, "Alice", "alice@example.com", false);
+        let head = f.commit_file("a.txt", "a\n", "first");
+        f.update_ref(&format!("{MEMBERS_PREFIX}joey"), &head);
+        let repo = f.open();
+        let member_key = PredicateKey::new("member", 1);
+        let revoked_key = PredicateKey::new("revoked", 1);
+
+        let members: Vec<_> = member_facts(&repo, &member_key, &[None], false)
+            .expect("facts must not hard-fail on a foreign ref")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ok")
+            .into_iter()
+            .map(|f| f.values[0].clone())
+            .collect();
+        assert_eq!(members, vec![Value::sym(active.as_str())]);
+
+        let revoked: Vec<_> = revoked_facts(&repo, &revoked_key, &[None], false)
+            .expect("facts must not hard-fail on a foreign ref")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ok");
+        assert!(revoked.is_empty());
+    }
+
+    /// The bound-path manifestation of the same defect: a `Signer:` trailer
+    /// written as a bare email (`claim.rs`'s type-guessing lets this
+    /// through) reaches `member(+M)` as a non-hex value. It must read as "no
+    /// such member", not fail the query that asked.
+    #[test]
+    fn a_non_hex_bound_member_value_is_false_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.commit_file("a.txt", "a\n", "first");
+        let repo = f.open();
+        let key = PredicateKey::new("member", 1);
+
+        let out = member_facts(&repo, &key, &[Some(Value::sym("alice@example.com"))], false)
             .expect("facts")
             .collect::<Result<Vec<_>, _>>()
             .expect("ok");
