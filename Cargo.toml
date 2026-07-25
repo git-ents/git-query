@@ -3,9 +3,7 @@ members = [
     "crates/gix-query-ir",
     "crates/gix-query-parse",
     "crates/gix-query-check",
-    "crates/gix-query-engine",
-    "crates/gix-query-engine-naive",
-    "crates/gix-query-demand",
+    "crates/gix-query-eval",
     "crates/gix-query-host",
     "crates/gix-query-rules",
     "crates/gix-query-kernel",
@@ -13,11 +11,8 @@ members = [
     "crates/git-query",
     "crates/test-support",
 ]
-# Both need a nightly compiler because they link Nemo, which uses
-# `#![feature(...)]`. Excluding them is what keeps `cargo test --workspace` a
-# stable-toolchain command. See DEVPLAN.md 2.11.
-exclude = [
-    "crates/gix-query-engine-nemo",
-    "spikes/nemo-spike",
-]
+# The spike that produced spikes/nemo-spike/spike-report.md. Kept as evidence,
+# not as a build target; its gates live on in gix-query-eval's conformance
+# suite. See DEVPLAN.md 2.11.
+exclude = ["spikes/nemo-spike"]
 resolver = "3"

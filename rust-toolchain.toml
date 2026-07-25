@@ -1,0 +1,11 @@
+# Nemo uses `#![feature(...)]`, so the whole workspace needs nightly -- there
+# is no stable subset and deliberately no feature gate carving one out, since
+# a split build is a second way to do things and it would be the way that
+# silently stops being tested. See DEVPLAN.md 2.11.
+#
+# Pinned to an exact date rather than the floating channel: build
+# reproducibility should not be a function of what upstream landed this
+# morning. Bumping it is an ordinary change; bumping the Nemo pin is not.
+[toolchain]
+channel = "nightly-2026-07-23"
+components = ["clippy", "rustfmt"]

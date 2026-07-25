@@ -29,8 +29,8 @@ A mode-checked, magic-set-rewritten Datalog frontend over a git-backed extension
 Everything that makes this project what it is — the grammar, the validation passes, the mode system, the rewrite, footprints, derivation trees — sits above that seam.
 What sits below is only "compute the least fixpoint of a stratified program over a finite EDB", and that is a commodity.
 
-The engine that ships is ours: stratified and semi-naive, with mode-driven join and index selection.
-A second implementation adapts [Nemo](https://github.com/knowsys/nemo); it is optional, nightly-only, and off by default, and its real job is to disagree with ours in CI when one of them is wrong.
+The fixpoint engine is [Nemo](https://github.com/knowsys/nemo), and it is the only one.
+That buys stratified evaluation that was correct on the first attempt and costs a nightly toolchain and a git dependency, which is the trade `DEVPLAN.md` §2.11 records in full.
 
 Two properties do most of the work.
 
@@ -49,10 +49,7 @@ Body literals are evaluated in author order, which fixes the sideways-informatio
 | [`gix-query-ir`](crates/gix-query-ir) | terms, rules, the signature registry, canonicalization, and the traits the engine reaches the world through — the frozen seam |
 | [`gix-query-parse`](crates/gix-query-parse) | text to IR, and the pretty-printer |
 | [`gix-query-check`](crates/gix-query-check) | the nine validation passes |
-| [`gix-query-engine`](crates/gix-query-engine) | the engine seam: load a program, run it against an EDB, read relations, trace a tuple |
-| [`gix-query-engine-naive`](crates/gix-query-engine-naive) | the engine that ships — semi-naive, plus a round-based mode kept as its own oracle |
-| [`gix-query-engine-nemo`](crates/gix-query-engine-nemo) | an optional adapter for [Nemo](https://github.com/knowsys/nemo); nightly-only, off by default |
-| [`gix-query-demand`](crates/gix-query-demand) | the magic-set rewrite, the demand loop, and the builtin call log |
+| [`gix-query-eval`](crates/gix-query-eval) | the magic-set rewrite, the Nemo lowering, the demand loop, and derivation trees |
 | [`gix-query-host`](crates/gix-query-host) | repo-backed fact sources and the projection builtins |
 | [`gix-query-rules`](crates/gix-query-rules) | rule-module storage, whole-program assembly, the cache key |
 | [`gix-query-kernel`](crates/gix-query-kernel) | the frozen compiled denial rules, and the differential test oracle |

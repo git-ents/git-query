@@ -33,16 +33,15 @@ All code and documentation contributions should be submitted as GitHub Pull Requ
 
 ## Upgrading the Nemo engine adapter
 
-`crates/gix-query-engine-nemo` is pinned to an exact upstream commit, not a version range and never a branch.
+`crates/gix-query-eval` pins Nemo to an exact upstream commit, not a version range and never a branch.
 
-Treat a bump as a semantics change, because that is what it is: the crate's job is to compute the same relations as `gix-query-engine-naive`, and anything that moves in Nemo's evaluator, parser, value domains, or tracer can break that without breaking the build.
+Treat a bump as a semantics change, because that is what it is: the crate's job is to compute the relations our own semantics say it should, and anything that moves in Nemo's evaluator, parser, value domains, or tracer can break that without breaking the build.
 Nemo is also unpublished and nightly-only, so there is no registry advisory feed and no semver contract to lean on.
 
 The procedure, in a branch:
 
-1. Change the `rev` in `crates/gix-query-engine-nemo/Cargo.toml`.
-2. Run the full differential suite.
-   Every generated program must produce relations equal to the naive engine's, exactly.
+1. Change the `rev` in `crates/gix-query-eval/Cargo.toml`.
+2. Run the conformance suite, which asserts what we believe about Nemo rather than about any one program, and the kernel differential against `ascent`.
 3. Run the golden `explain` traces.
    A trace that changed shape is a finding, not a rebaseline.
 4. Diff the fragment inventory in `DEVPLAN.md` §2.11 against upstream's changelog.

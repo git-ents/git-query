@@ -12,6 +12,5 @@ ascent = "0.8"
 gix-query-ir = { path = "../gix-query-ir" }
 gix-query-parse = { path = "../gix-query-parse" }
 gix-query-check = { path = "../gix-query-check" }
-gix-query-engine-naive = { path = "../gix-query-engine-naive" }
-gix-query-demand = { path = "../gix-query-demand" }
+gix-query-eval = { path = "../gix-query-eval" }
 proptest = "1"

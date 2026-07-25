@@ -11,14 +11,18 @@ There is exactly **one** binary — `git-query`, invoked as `git query` — with
 No `git-explain`, no `git-rules`.
 
 **What is actually being built, stated once:** a mode-checked, magic-set-rewritten Datalog frontend over a git-backed EDB, evaluated by a fixpoint engine reached through a seam.
-Everything that makes this project what it is — the grammar, the nine validation passes, the mode system, the magic-set rewrite, the demand loop that keeps host builtins from being enumerated, footprints, the cache key, `explain` — sits above that seam and is ours in every design.
-What sits below it is only "compute the least fixpoint of a stratified Datalog program over a finite EDB", and that is a commodity.
+Everything that makes this project what it is — the grammar, the nine validation passes, the mode system, the magic-set rewrite, the demand loop that keeps host builtins from being enumerated, footprints, the cache key, `explain` — is ours.
+The one thing that is not is "compute the least fixpoint of a stratified Datalog program over a finite EDB", and that is a commodity.
 
 The engine was originally specified here as a hand-written semi-naive interpreter.
-**§2.11 supersedes that**: there are two engines behind one trait, a naive evaluator we own and an optional [Nemo](https://github.com/knowsys/nemo) adapter, kept honest against each other by a differential test.
+**§2.11 supersedes that**: the engine is [Nemo](https://github.com/knowsys/nemo), it is the only one, and `gix-query-eval` calls it by name rather than through a seam anticipating a second.
 `ascent` remains the compiled kernel only (§2.2) — it is compile-time and cannot load rule modules from refs at runtime, which is the entire feature.
 Cozo remains rejected (§2.1).
-The language is small enough — no function symbols, set semantics, stratified — that the owned evaluator is tractable; that is the bet, and the Nemo spike (`spikes/nemo-spike/spike-report.md`) is the evidence that the seam is worth having either way.
+The Nemo spike (`spikes/nemo-spike/spike-report.md`) is the evidence, and §2.11 is the list of what adopting it costs.
+
+Two constraints run through every phase and belong here rather than in a style guide.
+**Make invalid states unrepresentable** (§2.12) — in this project it is what holds the engine's fragment, so it is load-bearing rather than tasteful.
+And **one way to do things**: no second engine, no stable/nightly split, no trait with one implementation.
 
 ---
 
@@ -679,16 +683,17 @@ Fixing it in the source removes a search from the engine as well as from the val
 
 ### 2.8 The naive evaluator is a permanent artifact, not a stepping stone
 
-> **Amended by §2.11.**
-> "Naive" now names a *mode* of `gix-query-engine-naive`, not a separate throwaway.
-> The round-based mode is still permanent, still behind a test-only feature, still the oracle.
-> What is no longer true is the implication that the crate containing it is only a test artifact — it is the engine that ships, and it may be optimized as far as the differential tests permit.
+> **Superseded by §2.11.**
+> There is no naive evaluator and no semi-naive one: Nemo does both, and writing either to check the other would be writing the engine we decided not to write.
+> The reasoning below is preserved because it was right about *why* — semi-naive evaluation fails by producing wrong answers rather than crashes — and that reasoning now argues for the two differentials that remain, the `ascent` kernel comparison (§2.2) and the rewritten-vs-unrewritten check (§2.10), plus the Nemo conformance suite (§2.11).
+> What we gave up is the arbitrary-generated-program oracle, and that is a real loss to name rather than gloss: nothing now checks Nemo against an independent implementation on a random program.
+> The kernel differential covers a fixed rule set only.
 
 Build the naive (round-based, recompute-everything) evaluator first, then semi-naive — and **keep the naive one forever**, behind a test-only feature, as the differential-testing oracle.
 
 Semi-naive evaluation is where the subtle bugs live: delta management across strata, negation evaluated against a completed stratum, index maintenance under insertion.
 Every one of those produces a *wrong answer*, not a crash, and wrong answers in a gate are the failure mode this whole design exists to prevent.
-A naive evaluator is a few dozen lines, correct by inspection, and a perfect oracle: for any program and any finite EDB the two must agree relation-for- relation.
+A naive evaluator is a few dozen lines, correct by inspection, and a perfect oracle: for any program and any finite EDB the two must agree relation-for-relation.
 
 This is the same move as §2.2's interpreter-vs-`ascent` differential, and the two are complementary rather than redundant — `ascent` checks the interpreter against an independently-written engine on the frozen kernel rules; naive-vs-semi-naive checks the interpreter against itself on *arbitrary generated* programs.
 Neither subsumes the other.
@@ -732,97 +737,124 @@ Three consequences, all of which need to be in the Phase 2 `eval` brief:
   So the rewrite carries an origin back-reference on every generated rule, and the provenance sink (§2.9) resolves through it.
   Designing this in is cheap; retrofitting it means the first `explain` output anyone sees is full of `magic_` relations.
 
-The naive oracle (§2.8) runs the **same** rewritten program — the differential test targets the evaluator, not the rewrite.
-The rewrite gets its own test: for programs where unrestricted bottom-up evaluation is affordable, rewritten and unrewritten runs must agree on the demanded subset.
+The rewrite gets its own test, and with §2.8's oracle gone it is the only one guarding it: for programs where unrestricted bottom-up evaluation is affordable, rewritten and unrewritten runs must agree on the demanded subset.
+Both runs go through the same engine, so this checks the rewrite and not the evaluator — which is the right target, since the rewrite is ours and the evaluator is not.
 
-### 2.11 The evaluator goes behind a seam, with two implementations
+### 2.11 Nemo is the engine, and it is the only one
 
-**This supersedes the parts of §2.1 and §2.8 that assume a single hand-written semi-naive interpreter is the only engine.**
-It does not disturb §2.2 (`ascent` for the compiled kernel), §2.7 (author order is the SIPS), §2.9 (provenance), or §2.10 (the magic-set rewrite) — all four are frontend decisions and survive whichever engine runs underneath.
+**This supersedes the parts of §2.1 and §2.8 that assume a hand-written semi-naive interpreter.**
+It does not disturb §2.2 (`ascent` for the compiled kernel), §2.7 (author order is the SIPS), §2.9 (provenance), or §2.10 (the magic-set rewrite) — all four are frontend decisions and survive underneath any engine.
 
-The decision was taken on evidence, not preference: a timeboxed spike embedded Nemo behind a stand-in seam and ran six gates.
+The decision was taken on evidence: a timeboxed spike embedded Nemo and ran six gates.
 `spikes/nemo-spike/spike-report.md` is the full report; 55 tests back it.
-What follows is what the plan has to change as a result.
 
-**What the spike found that changes the design.**
+**One way to do things.**
+An earlier draft of this section put two engines behind a trait and shipped the one we wrote.
+That is rejected.
+Two implementations means two sets of bugs, two performance profiles, a differential suite to keep green, and a seam whose only client is a test — all paid for now against a benefit that arrives only if we ever swap.
+There is one engine, it is Nemo, it is named concretely, and `gix-query-eval` calls it directly.
+If a second engine ever earns its place, extracting a trait from one working implementation is a smaller job than maintaining two of them from the start.
 
-Nemo's *evaluation* is right and fast.
-Set semantics, stratified negation across three strata, termination on cyclic input, constants in heads, `!=` joins — every golden program matched hand-computed relations on the first run, and ten thousand facts reach fixpoint in about five milliseconds.
-An unstratifiable program is rejected at load with a diagnostic naming stratification, so one leaking past our validator fails loudly rather than answering wrongly.
+**What we are accepting, stated once so it is not rediscovered as a surprise.**
 
-Nemo's *packaging* is not usable as a sole dependency:
+- **The workspace is nightly-only.** `nemo` and `nemo-physical` use `#![feature(…)]`, so everything linking them needs nightly. `rust-toolchain.toml` at the root pins an exact nightly; a floating channel would make our build reproducibility a function of upstream's mood.
+- **Nothing in the dependency chain can be published to crates.io.**
+  Publication of `nemo` stopped at a yanked `0.2.1`, so it enters as a git dependency, and crates.io refuses any crate that has one.
+  `gix-query` and `git-query` are therefore installed from source until Nemo publishes.
+- **230 transitive crates**, including an HTTP client, an LSP implementation, and an RDF/SPARQL stack, none of it reachable from anything we do.
+- **No concurrency, no cancellation.**
+  The API is `!Send` throughout and `execute()` enters a process-global timing mutex.
+  One evaluation per process, no watchdog thread, and caps become admission-time refusals rather than truncation.
 
-- It is **nightly-only** — `nemo` and `nemo-physical` both use `#![feature(…)]`,
-  so anything linking them needs a nightly compiler, and upstream pins the
-  unversioned `nightly` channel.
-- It is **not on crates.io** — publication stops at a yanked `0.2.1`; `v0.9.1`
-  exists only as a git tag. crates.io refuses to publish a crate carrying a git
-  dependency, so a crate wrapping Nemo can never be released.
-- It drags **230 transitive crates** including a full HTTP client, an LSP
-  implementation, and an RDF/SPARQL stack, none of it reachable from anything we
-  do.
-- Its API is **`!Send` throughout**, and `execute()` enters a process-global
-  timing mutex, so two evaluations cannot run concurrently in one process, a
-  watchdog thread cannot supervise one, and an evaluation cannot be cancelled.
+What we get for it is the part that would have taken longest to write and been hardest to trust: set semantics, stratified negation, termination on cyclic input, and ten thousand facts to fixpoint in about five milliseconds, all correct on the first attempt.
 
-**Decision. [engine-default]** One trait, two implementations, and the one we own is the default:
+**Validate the subset before executing.**
+The fragment boundary is ours to hold — nothing in Nemo refuses arithmetic, aggregates, existential heads, or directives.
+It is held in three places, in increasing order of how much we should rely on them:
 
-- **`gix-query-engine`** — the seam.
-  `load(program) → run(edb) → relations`, `trace(tuple)`, and the cap/abort hooks.
-  Nothing outside an adapter crate may name an engine type.
-- **`gix-query-engine-naive`** — ours, the default, stable-toolchain, publishable. §2.8 said this would be a test-only oracle "never optimized".
-  **That is now wrong**: it is the shipping engine, so it may be optimized as far as the differential tests permit, and semi-naive evaluation lives here.
-  What survives from §2.8 is the *round-based naive mode*, retained behind a test-only feature as the oracle for its own semi-naive mode.
-- **`gix-query-engine-nemo`** — optional, non-default, nightly-gated, not published, the only crate permitted to depend on `nemo`.
-  Pinned to an exact commit, never a branch.
-
-The differential job the integration brief asks for therefore stops being a one-way check on an oracle and becomes the thing that keeps two independently written engines agreeing.
-That is a better test than either arrangement alone, and it is the one concrete way the Nemo work pays for itself even if the adapter never ships.
-
-**The alternative was considered and rejected for now.**
-Vendoring Nemo removes the crates.io blocker and pins semantics exactly, but leaves the nightly requirement and takes on 230 crates of maintenance.
-It stays on the table as open question 6.
+1. **By construction, which is where almost all of it belongs.**
+   The IR has no term-level operations, so arithmetic and aggregates have no lowering path and are *unrepresentable* rather than *rejected*.
+   [`Symbol`](#212-make-invalid-states-unrepresentable) cannot hold a `"`, so the emitter cannot produce the one byte Nemo's string lexer cannot carry.
+   A `NemoProgram` can only be constructed by the emitter from a `CheckedProgram`.
+   See §2.12 — this is the single largest application of that doctrine in the plan.
+2. **By an emission audit, immediately before execution.**
+   After lowering, hand the emitted text back to Nemo's own parser and assert that the program it recovers has exactly the predicates, arities, and rule count we lowered.
+   This is cheap, it runs every time, and it catches the class of emitter bug that types cannot: a symbol that terminated a literal early, a name that collided, a rule that silently vanished.
+   **This is the check that answers "do we have the subset we support" for a given program.**
+3. **By a conformance suite pinned to the Nemo commit.**
+   The spike's six gates are promoted into `gix-query-eval`'s test suite, rewritten against our real types.
+   They assert what we *believe* about Nemo — that a bare identifier is a constant, that strings are not unescaped, that unstratifiable programs are rejected at load, that no value outside our two domains comes back.
+   **This is the check that answers "do we have the subset we support" for a given Nemo version**, and it is what the upgrade audit runs.
 
 **Six spike findings that are implementation obligations, not commentary.**
 
 1. **EDB never travels as program text.**
    Nemo's program parser runs at roughly 109 KB/s: ten thousand facts cost 1.74 s as inline text and 6.5 ms through an in-memory CSV resource provider, for identical 5 ms evaluation.
-   The adapter asserts facts through an in-memory `ResourceProvider`, never by string concatenation.
-   The same lesson generalizes: whatever the engine, bulk facts cross the seam as typed tuples, and the seam's `run(edb)` signature is what enforces it.
+   Facts are asserted through an in-memory `ResourceProvider`, never by string concatenation.
+   Make this a type distinction, not a convention: rules lower to `NemoProgram`, facts lower to `NemoTables`, and there is no function taking a fact to program text.
 2. **A `"` cannot be written into Nemo program text at all**, escaped or otherwise — its string lexer takes every byte up to the next quote and does no unescaping, so an emitter that escapes silently corrupts.
    Git permits `"` in path names and author names.
-   Constants in *rules* do go through program text, so a rule module mentioning such a path must be a validator diagnostic, not a lowering panic.
-   Add this to the `check` brief.
+   Constants in *rules* do go through program text, so this is a `Symbol` construction error surfaced as a parse diagnostic and as a host-fact error, never a lowering panic.
 3. **Negation leaves no node in a Nemo derivation tree.**
    Its tracer walks only positive body atoms, so a derivation that turned on `~revoked(alice)` produces a tree that never mentions `revoked`. §1.11 and Phase 4 require a negation witness in `explain` output.
-   **That node comes from our rewrite and our provenance sink, never from the engine** — which is another way of saying §2.9 was right to insist provenance is designed in rather than borrowed.
+   **That node comes from our rewrite and our own recording, never from the engine** — which is another way of saying §2.9 was right to insist provenance is designed in rather than borrowed.
 4. **Truncation is not expressible.**
    Nemo has no row cap, no timeout, and no working cancellation — `tokio::time::timeout` compiles and does nothing, because its futures never yield.
-   The only true abort is killing a subprocess.
-   See the Phase 4 amendment for what this does to exit code 3.
+   Exit code 3 therefore has no producer.
+   See the Phase 4 amendment.
 5. **A bare identifier is a constant, not a variable, and lands in an IRI domain.**
    `out(X) :- in(X).` is valid Nemo that parses, validates, runs, and derives nothing.
-   Every symbol the adapter emits is quoted; every value read back is checked against our two domains and refused otherwise.
-   The fragment boundary is ours to hold — nothing in Nemo refuses arithmetic, aggregates, or existential heads, and existential heads mint nulls that are outside our value space entirely.
+   Every symbol we emit is quoted; every value read back is `TryFrom`-checked into our two domains and refused otherwise.
 6. **`@export` directives survive into the engine.**
    Rule modules are text loaded from refs.
-   If that text reached an engine unfiltered, a repository could make a query write to disk.
-   The validator must reject directives *before* lowering — which it does anyway, since our grammar has none, but the adapter must not provide a bypass.
+   If that text reached the engine unfiltered, a repository could make a query write to disk.
+   Our grammar has no directives and our emitter is the only producer of `NemoProgram`, so the bypass does not exist — but the conformance suite asserts that it does not, because "the type system prevents it" is a claim that decays.
 
 **Non-goals, stated so they are not rediscovered as good ideas.**
 
+- **No second engine, and no trait anticipating one.**
+  Extract the seam when there is something to put behind it.
 - **No incremental or DBSP-style evaluation in the CLI path.**
   Per-stratum, footprint-keyed caching only (Phase 6).
   The demand loop already re-runs the whole program per round; making *that* incremental is a different project.
 - **No Nemo aggregates, arithmetic, or existential rules**, even where convenient.
   The fragment is frozen by `docs/query-and-rules.adoc`, not by what an engine happens to offer.
-- **The naive engine's round-based mode is never deleted and never grows features the spec lacks.**
-  Its whole value is being correct by inspection.
 
 **Standing task — engine upgrade audit.**
-A Nemo version bump is a semantics change, so it is not a dependabot patch.
-Procedure, to be written into `CONTRIBUTING.md`: bump in a branch; run the full differential suite; run the golden `explain` traces; diff the §2.11 fragment inventory against their changelog; only then merge.
+A Nemo version bump is a semantics change, not a dependabot patch.
+Procedure, in `CONTRIBUTING.md`: bump the pinned `rev` in a branch; run the conformance suite; run the golden `explain` traces; run the kernel differential against `ascent`; diff the §2.11 fragment inventory against upstream's changelog; only then merge.
 The pin is an exact commit, and `spike-report.md` records which commit the current findings describe.
+
+### 2.12 Make invalid states unrepresentable
+
+A standing constraint on every crate, not a phase.
+It goes here rather than in a style guide because in this project it is load-bearing: the whole value proposition is that a gate's verdict can be trusted, and every one of §1's fifteen defects was a state the design permitted and did not want.
+
+The rule: **if a value can be wrong, the type should not exist.**
+Concretely, and these are obligations in the agent briefs, not suggestions:
+
+- **Parse, do not validate.**
+  Every stage produces a type only that stage can construct.
+  `Module` comes from the parser; `CheckedProgram` from the validator and from nowhere else; `RewrittenProgram` from the magic-set rewrite; `NemoProgram` and `NemoTables` from the emitter.
+  A function that needs a validated program takes a `CheckedProgram` rather than a `Program` plus a promise.
+  This is already how `gix-query-ir` is built and it is the pattern to extend.
+- **Newtype every identifier.**
+  `PredicateKey`, `Var`, `RuleId`, `StratumId`, `ArgIndex`, `Symbol`, `RefGlob` — no bare `String` or `usize` crossing an API boundary where a different one would type-check.
+  The bug this prevents is the one where a rule index is passed as a literal index and nothing complains.
+- **Validate at construction, once.**
+  `Symbol::new` refuses a `"` and returns `Result`; nothing downstream re-checks, because nothing downstream can hold an unchecked one.
+  Same for `PredicateKey` and the `magic_` reservation.
+- **Enums over booleans and over `Option` pairs.**
+  `Mode::{Bound, Free}` not `bool`.
+  A truncation outcome is `Outcome::{Rows(NonEmpty<Tuple>), Empty, Refused(Reason)}`, not a `Vec` plus a `truncated: bool` that a caller can ignore — the spike's exit-code work exists precisely because an ignorable flag is how a gate reads a partial answer as clean.
+- **`NonEmpty` where empty is meaningless.**
+  A rule body, a stratum, an SCC.
+- **Make the illegal combination fail to compile.** `PredicateClass::Edb` carries a `ModeSet` and `Idb` carries an inferred `ArgSet`; there is no struct with both fields and a comment about which applies.
+- **Exhaustive matches, no catch-all arms** on our own enums, so adding a variant is a compile error at every site that must consider it.
+
+Two cautions, because this doctrine has a failure mode of its own.
+Do not encode in types what belongs in a test — a type cannot express "these two engines agree" or "this terminates".
+And do not add a type parameter whose only inhabitant is one concrete type; a phantom typestate with a single state is ceremony, and §2.11's rejection of a single-implementation trait is the same judgment applied one level up.
 
 ---
 
@@ -834,11 +866,8 @@ Create **all** skeletons in Phase 1, before fanning out, so each agent edits onl
 | --- | --- |
 | `gix-query-ir` | terms, literals, rules, program, predicate registry, signatures, mode sets, builtin property table, IR canonicalization (§1.1). **The seam.** |
 | `gix-query-parse` | text → AST → IR, plus the pretty-printer. Owns the grammar and diagnostics. |
-| `gix-query-check` | passes 1–9. Owns stratification, SCCs, mode inference, footprints. |
-| `gix-query-engine` | **the seam** (§2.11): the `Engine` trait — `load` → `run(edb)` → relations, `trace(tuple)`, cap and abort hooks — plus the shared program and relation types it speaks in. No engine implementation lives here. |
-| `gix-query-engine-naive` | ours, the default engine. Round-based naive mode (§2.8, test-only feature) and semi-naive mode, stratum by stratum, hash-indexed joins, negation against completed lower strata, literals joined in author order. Caps checked *inside* the loop. Provenance sink (§2.9). |
-| `gix-query-engine-nemo` | optional, non-default, nightly-gated, unpublished. The **only** crate permitted to name a `nemo` type. Owns the fragment-emission layer and the value round trip from §2.11. |
-| `gix-query-demand` | magic-set rewrite (§2.10) plus the outer demand loop, engine-agnostic. Owns the builtin call log, which later feeds `explain` re-annotation and the pass-7 footprint audit trail. |
+| `gix-query-check` | passes 1–9. Owns stratification, SCCs, mode inference, footprints. Sole producer of `CheckedProgram`. |
+| `gix-query-eval` | magic-set rewrite (§2.10), Nemo lowering and the emission audit, the demand loop and its call log, derivation-tree recovery. The **only** crate permitted to name a `nemo` type (§2.11). |
 | `gix-query-host` | repo-backed EDB providers, `bind`/`bind_fuzzy`, backing-source declarations. Only crate that depends on `gix-anchor`. |
 | `gix-query-rules` | module load/store via `gix-store`, whole-program assembly, epoch CAS, cache key. |
 | `gix-query-kernel` | the frozen `ascent!` denial rules + differential test harness. |
@@ -849,18 +878,18 @@ Create **all** skeletons in Phase 1, before fanning out, so each agent edits onl
 Naming is mechanical and has no exceptions: **`gix-*` is a library, `git-*` is a binary**, matching `../git-store` and `../git-anchor`.
 There is one `git-*` crate in this workspace and there will not be a second — `explain` and `rules` are subcommands, not binaries (§1.10).
 
-**`gix-query-eval` is gone**, split by §2.11 into `-engine`, `-engine-naive`, `-engine-nemo`, and `-demand`.
-The split is not bookkeeping: it is what stops an engine's semantics from becoming the language's semantics by proximity.
-
-No crate in that group may depend on `gix` or `gix-anchor`.
-Builtins and EDB providers reach them through a trait defined in `gix-query-ir`.
+`gix-query-eval` must **not** depend on `gix` or `gix-anchor`.
+Builtins and EDB providers reach it through the traits defined in `gix-query-ir`.
 This is what makes evaluation property-testable over synthetic facts with no repo at all, and it is the single most important structural constraint in this plan.
-The practical consequence for scheduling: **`gix-query-ir`, `-parse`, `-check`, `-engine*`, and `-demand` have no git dependency at all**, so Phases 1–2 can run entirely in parallel with the `../git-anchor` work of Phase 0.
+The practical consequence for scheduling: **`gix-query-ir`, `-parse`, `-check` and `-eval` have no git dependency at all**, so Phases 1–2 can run entirely in parallel with the `../git-anchor` work of Phase 0.
 
-`gix-query-engine-nemo` is additionally the only crate in the workspace that is not built by default and not built on stable.
-Root `Cargo.toml` keeps it out of `default-members`; CI builds it in a separate nightly job (Phase 2 amendment).
+The whole workspace builds on the nightly pinned by the root `rust-toolchain.toml`, because `gix-query-eval` links Nemo (§2.11).
+There is no stable subset and no feature gate carving one out — a split build is a second way to do things, and it would be a way that silently stops being tested.
 
-Two splits considered and rejected.
+Four splits considered and rejected.
+A separate crate for the engine seam, and a second implementation behind it — see §2.11: one client, and that client a test.
+A separate crate for the magic-set rewrite and demand loop, apart from the Nemo lowering.
+The rewrite is engine-agnostic in principle, but with one engine the split buys a boundary nobody crosses, and the demand loop and the lowering share the call log; they are modules, not crates.
 A separate registry crate (signatures and builtin declarations apart from the IR) buys nothing here — the registry *is* the contract Phase 1 freezes, and splitting it gives two things to freeze instead of one.
 A separate syntax crate holding the AST apart from the IR would add a translation layer whose only job is to be traversed; the parser produces IR directly and keeps spans on IR nodes for diagnostics.
 
@@ -939,19 +968,17 @@ It must pin, precisely:
 **Gate: nothing in Phase 2 starts until this compiles and is reviewed.**
 An IR change after fan-out invalidates three agents' work simultaneously.
 
-### Phase 2 — four agents, parallel; `nemo` gated on the seam
+### Phase 2 — two agents, parallel
 
-They share only `gix-query-ir` and never each other, with one ordering constraint added by §2.11: `naive` and `nemo` both write against `gix-query-engine`, so the `demand` agent lands the trait before either starts.
-The trait is small and freezing it is a Phase 1-shaped act performed at the top of Phase 2 — treat it as such, with the same "no edits afterwards" discipline `gix-query-ir` gets.
+`parse` landed ahead of this phase, recovered from the branch the engine decision parked it on: the grammar and the IR never depended on which engine consumes the result.
+What remains shares only `gix-query-ir` and never each other.
 
-- **Agent `parse`** → `gix-query-parse`.
-  Grammar per corrected doc (§1.2, §1.3).
-  Rule files, tier-3 goals, and tier-1/2 desugaring all produce the same IR — that is what "one syntax, three parts" has to mean concretely.
-  Obligation: round-trip property test (parse → pretty-print → parse is a fixpoint), and a corpus of malformed inputs each with an asserted diagnostic.
+Both briefs carry §2.12 verbatim.
+It is not a style note here — the fragment containment that §2.11 relies on *is* a type-system argument, and an agent that reaches for `String` and a validation function has quietly moved a compile error into a runtime one.
 
 - **Agent `check`** → `gix-query-check`.
-  Passes 1–9.
-  Four subtleties to state in the brief, because all four will otherwise be guessed wrong:
+  Passes 1–9, and `CheckedProgram` constructible from nowhere else.
+  Five subtleties to state in the brief, because all five will otherwise be guessed wrong:
   - *Mode checking is left-to-right over the body **as written*** (§2.7).
     No reordering, no search.
     A literal whose required-bound argument is unbound at its position is an error naming the variable and the literal.
@@ -962,43 +989,46 @@ The trait is small and freezing it is a Phase 1-shaped act performed at the top 
     If any rule for `p` needs argument 2 bound, `p` requires argument 2 bound.
   - *Pass 7's footprint carries transitive **builtin** use as well as transitive base predicates* (§1.11), because the `bind_fuzzy`-in-gates prohibition and the ambiguity lint are both defeated by a wrapper predicate otherwise.
     Pass 7 is parameterized over the backing-source map rather than reaching into the host — the map is registry data, so `gix-query-check` keeps no git dependency.
+  - *A symbol containing `"` is a diagnostic here, not a panic later* (§2.11 finding 2).
+    The refusal belongs to `Symbol::new`, so this pass only has to surface it with a span; what the brief must prevent is the agent "helpfully" escaping instead.
 
-Obligation: one accept-fixture and one reject-fixture per pass, each reject naming the pass that fired; the corrected §1.7 vocabulary as an end-to-end accept case; and **the doc's original `introduced/2` as a pass-8 reject case**, since that is the exact bug the pass exists to catch.
+  Obligation: one accept-fixture and one reject-fixture per pass, each reject naming the pass that fired; the corrected §1.7 vocabulary as an end-to-end accept case; and **the doc's original `introduced/2` as a pass-8 reject case**, since that is the exact bug the pass exists to catch.
 
-- **Agent `demand`** → `gix-query-engine` + `gix-query-demand`.
-  **The seam first**, because everything downstream is written against it, then the magic-set rewrite (§2.10) — without the rewrite the mode system has no runtime meaning and the first `+Rev` predicate materializes the repo — then the outer demand loop and its call log.
-  The loop is proven in `spikes/nemo-spike`: promote it to library quality, keeping a stub-table builtin implementation for tests so the loop stays engine- and repo-independent.
+- **Agent `eval`** → `gix-query-eval`.
+  The largest brief in the plan, in four parts, in this order:
 
-  Obligation: the spike's A3 cases as library tests — flat query converges in two rounds, chained demand discovers a call in round 2 and converges in round 4, a cycle in the chain terminates because the call log memoizes, a call with no answers is logged rather than dropped, and a builtin whose stub table holds ten thousand rows is called exactly once.
-  Plus a rewritten-vs-unrewritten agreement test on programs small enough to evaluate both ways.
+  1. **Magic-set rewrite** (§2.10), IR to IR.
 
-- **Agent `naive`** → `gix-query-engine-naive`.
-  Round-based naive mode first (§2.8), kept behind a test-only feature, then semi-naive: stratum by stratum, hash-indexed joins, negation evaluated against completed lower strata, literals joined in author order.
-  Caps (rows, iterations, wall time) checked *inside* the loop, with truncation surfaced as a distinct typed outcome — never a silently short relation.
-  Repeat in the brief: a gate script reading a truncated relation as clean is the failure mode this exists to prevent.
-  The provenance sink from §2.9 is threaded through joins from the first commit, not added later.
+  Without it the mode system has no runtime meaning and the first `+Rev` predicate materializes the repo.
+  Author order is the SIPS, so no strategy has to be searched for.
+  Stratification is rechecked on the rewritten program as an internal assertion; if it fires, the message says it is an engine bug.
+  Every generated rule carries its origin back-reference and body-literal map, which `gix-query-ir` already provides — `explain` reports over source rules, never over `magic_` relations.
 
-  Obligation: **differential test, naive vs semi-naive, over generated programs and generated finite EDBs** — the primary obligation, and the reason the naive mode exists.
-  Plus: the A2 golden set from the spike report, run through this engine and asserted by exact set equality; property test that every validator-accepted program reaches fixpoint within a fuel bound, with fuel exhaustion a test failure rather than a skip; hand-computed fixtures for stratified negation and for recursion; and a bench asserting the no-op provenance sink costs nothing measurable.
+  2. **Nemo lowering, and the emission audit.**
 
-  This agent is doing the most work in the plan and it is the one to give the most room.
-  If any Phase 2 brief needs splitting, split this one: naive mode first, semi-naive and indexing second.
+  Rules become a `NemoProgram`; facts become `NemoTables` served from memory.
+  There is no function from a fact to program text, and that is a type-level fact rather than a review comment (§2.11 finding 1).
+  Before execution, the emitted text is parsed back by Nemo and its predicates, arities, and rule count asserted against what was lowered.
 
-- **Agent `nemo`** → `gix-query-engine-nemo`.
-  **[engine-default]** Only after the seam lands.
-  The adapter, the fragment-emission layer, and the value round trip, all per §2.11 and the spike's A1/A4/A6 findings: facts asserted through an in-memory `ResourceProvider` and never as program text, every symbol quoted and never escaped, `"` refused at emit time with a diagnostic, every value read back checked against our two domains, `trace` mapped onto our derivation-tree type with the negation gap filled from our own provenance rather than papered over.
-  The pin is an exact commit and the crate carries the upgrade-audit note from §2.11.
+  3. **The demand loop and its call log.**
 
-  Obligation: **the A2 golden set again, through this engine, asserted identical to `gix-query-engine-naive`'s answers** — that is the differential CI job, and it is the whole reason the adapter earns a place.
-  Plus a test that a value outside our fragment is an error rather than a coercion.
-  CI runs this crate in a **separate nightly job**; the default `cargo test --workspace` on stable must pass without it.
+  Proven in `spikes/nemo-spike`; promote it, rewritten against the real types.
+  The log records builtin, bound arguments, answer count and round, because `explain` and the pass-7 footprint audit both read it and neither can get that from the engine.
+
+  4. **Derivation-tree recovery.**
+
+  Nemo's trace mapped onto our tree, with the negation gap filled from the rewrite rather than papered over (§2.11 finding 3), and `magic_` bookkeeping filtered out.
+
+  Obligation, in the same order: the spike's A2 golden set, rewritten against real types, asserted by exact set equality; a rewritten-vs-unrewritten agreement test on programs small enough to evaluate both ways; an emission-audit test where a deliberately corrupted emitter is caught; the spike's A3 cases — flat query converges in two rounds, chained demand discovers a call in round 2 and converges in round 4, a cycle terminates because the log memoizes, a call with no answers is logged rather than dropped, and a builtin whose stub table holds ten thousand rows is called exactly once; the spike's A6 cases as a **conformance suite** asserting what we believe about the pinned Nemo (§2.11); a property test that every validator-accepted program reaches fixpoint within a fuel bound, fuel exhaustion being a test failure rather than a skip; and a golden derivation tree for a positive goal, a recursive goal, and a negation witness.
+
+  If this brief needs splitting, split it after part 2: rewrite and lowering first, demand loop and tracing second.
 
 ### Phase 3 — two agents, parallel; starts when Phase 2 merges
 
 - **Agent `host`** → `gix-query-host`.
   `FactSource` implementations for each repo-backed EDB relation over `gix`, plus `bind` and `bind_fuzzy` — the only two minting builtins left after §1.8 and §1.9 remove `span_diff` and `abbrev`.
-  They implement **the same trait the spike stubbed** (§2.11), so this phase is `gix-query-demand` swapping stub tables for git-anchor and git-store calls and nothing structural changing.
-  If it turns out to be more than that, the trait was wrong and the seam should be fixed rather than worked around.
+  They implement the `Builtin` and `FactSource` traits `gix-query-ir` already defines, which is the shape the spike stubbed, so this phase is `gix-query-eval`'s demand loop swapping stub tables for git-anchor and git-store calls and nothing structural changing.
+  If it turns out to be more than that, the traits were wrong and `gix-query-ir` should be fixed rather than worked around.
   `bind` emits both axes per §1.5 — **no interim mapping**, which is why this waits on `anchor-axes`.
   Each EDB predicate declares its backing source (§1.1) alongside its implementation, so the two cannot drift; that declaration is what turns pass 7 from predicate names into ref globs, so this is also where pass 7 first runs end to end — footprint → backing namespaces → cache key, plus the fuzzy-taint rejection and the ambiguity lint.
   First real query against a real repo lands here.
@@ -1017,11 +1047,12 @@ Obligation: one accept-fixture and one reject-fixture per pass, each reject nami
   Exit codes per grep convention (`0` rows, `1` none, `2` error) plus `3` for truncation, which the docs must name as fail-closed for gates (§1.11).
   Column order from the signature registry — that is the tsv contract, so it gets its own test.
 
-  **Exit code 3 is scoped by the engine. [engine-default]** `gix-query-engine-naive` checks caps inside its own loop, so it can produce a partial relation with a truncation flag and exit 3 is real.
-  `gix-query-engine-nemo` cannot: Nemo has no cap, no timeout, and no cancellation that works (§2.11, spike gate A5), so under that engine a cap is an **admission-time refusal** — count the EDB, project the cost, decline to start — which is exit 2, not exit 3.
-  Document that asymmetry rather than papering over it, and **do not fake exit 3**: an exit 3 that did not follow a partial answer would teach gate authors to trust a signal that sometimes means nothing.
-  Exit 2 is already fail-closed, so the degraded behavior is safe, merely less informative.
-  File the debt against the adapter, not against the CLI.
+  **Exit code 3 has no producer, so it is not issued.**
+  Nemo has no row cap, no timeout, and no cancellation that works (§2.11, spike gate A5), so there is no way to hand back a partial relation and say so.
+  A cap is therefore an **admission-time refusal** — count the EDB, project the cost, decline to start — and that is exit 2.
+  **Do not fake exit 3**: an exit 3 that did not follow a partial answer would teach gate authors to trust a signal that sometimes means nothing, which is worse than never emitting it.
+  Exit 2 is already fail-closed, so the behavior is safe, merely less informative.
+  Keep the code reserved and documented as reserved.
 
   The formatter owns everything the language shed: `--abbrev` over `oid` columns (§1.9) and span coalescing over consecutive `unreviewed_line` rows (§1.8).
   Both get golden-output tests, because both are now the *only* place that behavior exists.
@@ -1035,16 +1066,15 @@ Obligation: one accept-fixture and one reject-fixture per pass, each reject nami
 
   `explain` splits into two pieces, because §2.11 made the boundary between them real:
 
-  - **Tree extraction.** From `gix-query-engine-naive` this is the provenance
+  - **Tree extraction**, from `gix-query-eval`.
 
-  sink read back.
-  From `gix-query-engine-nemo` it is `engine.trace(fact)` mapped onto our tree type — reachable, typed, and leaf-matchable, but **carrying no node for any negated literal** and returning only *one* derivation where several exist (§2.11, spike gate A4).
-  Both gaps are filled from our own rewrite; neither is worked around inside the adapter.
+  Nemo's trace is typed and leaf-matchable, but it **carries no node for any negated literal** and returns only *one* derivation where several exist (spike gate A4).
+  Both gaps are filled from our own rewrite, above the lowering, never worked around inside it.
 
-  - **Re-annotation.** Join the tree's leaves against the `gix-query-demand` call
+  - **Re-annotation.**
 
-  log to attach builtin modes, the projection heuristic version, source refs, and the rules-snapshot OID.
-  This is the step that turns a derivation into an audit record, and it is engine-independent by construction, because the call log is ours.
+  Join the tree's leaves against the demand call log to attach builtin modes, the projection heuristic version, source refs, and the rules-snapshot OID.
+  This is the step that turns a derivation into an audit record, and none of it can come from the engine, which is why the log exists.
 
 - **Agent `effects`** → footprint export in `gix-query`.
   Public API returning a goal's transitive base-predicate footprint and the acyclicity verdict over a set of effect declarations.
@@ -1126,20 +1156,17 @@ Admission-time benchmarking stays too, demoted to what it actually is: early war
 - The corrected review vocabulary from §1.7 parses, validates, evaluates, and
   answers `git query run unreviewed` against a fixture repo — and the doc's
   original `introduced/2` is rejected by pass 8 with a message naming `C`.
-- Differential tests, all five: naive vs semi-naive over generated programs;
-  rewritten vs unrewritten over programs affordable both ways; owned engine vs
-  `ascent` kernel over random EDBs; cache-primed vs cold over the query corpus;
-  and **`gix-query-engine-naive` vs `gix-query-engine-nemo` over every generated
-  program, relations equal exactly** — the last in its own nightly CI job, since
-  the adapter is not built on stable (§2.11). **[engine-default]**
-- `cargo test --workspace` passes on **stable** with `gix-query-engine-nemo` absent.
-  The nightly job is additive; nothing in the default build path requires it.
+- Differential tests, all three: rewritten vs unrewritten over programs
+  affordable both ways; `gix-query-eval` vs the `ascent` kernel over random
+  EDBs; cache-primed vs cold over the query corpus.
+- The Nemo conformance suite passes against the pinned commit, and the emission
+  audit is exercised by a test that corrupts the emitter and watches it caught
+  (§2.11).
 - `reach(+Rev, -C)` at a fixture repo's `HEAD` touches only ancestors of `HEAD` — asserted by counting EDB reads, not by wall clock.
   This is the test that proves the mode system does something at runtime and not only at validation.
 - Property test: every validator-accepted program terminates within fuel.
-- Truncation is observable via exit code `3` in an integration test **under `gix-query-engine-naive`**, and a gate fixture treats it as failure.
-  Under the Nemo adapter the same fixture yields exit 2 from an admission-time refusal, and the gate fixture treats *that* as failure too — the test asserts both, so the asymmetry is documented by something that runs (§2.11).
-  **[engine-default]**
+- A query over a cost-gated EDB is refused at admission with exit `2`, and a gate fixture treats that as failure.
+  Exit `3` is asserted **not** to be issued, since nothing can produce it honestly (§2.11).
 - Golden `explain` trees for a positive goal, a recursive goal, and a negation
   witness.
 - A fixture repo exercising every EDB predicate in the registry.
@@ -1168,10 +1195,10 @@ Admission-time benchmarking stays too, demoted to what it actually is: early war
    Recommend deferring.
    Note that choosing the epoch ref over declared imports (§2.4) gives up cheap dependent *discovery* — with no import declarations you must parse every module to find who references your predicate.
    That is acceptable at current scale and it is the second reason declared imports eventually win, but it means this question stays fully open rather than becoming a small feature on top of existing machinery.
-5. **Which engine is the default — the open decision from the Nemo spike, and the one I most want a second opinion on. [engine-default]** §2.11 chose "ship the engine we own, offer Nemo as an opt-in accelerator", on the grounds that it is the only arrangement keeping `gix-*` publishable and buildable on stable.
-   The cost is that the naive evaluator becomes load-bearing, which is most of the engine work adopting Nemo was meant to avoid — though *only* the evaluator, since the grammar, validator, modes, rewrite, demand loop, footprints and `explain` were always ours regardless.
-   Two alternatives: **vendor Nemo** (removes the crates.io blocker and pins semantics exactly; keeps the nightly requirement and takes on 230 crates of maintenance), or **wait for Nemo to publish and stabilize** (not actionable on this schedule).
-   Every amendment that would move is marked `[engine-default]`; nothing else in the plan depends on the answer, which is itself the argument for the seam.
+5. **Closed: Nemo is the only engine.**
+   §2.11 records the decision and what it costs.
+   The two alternatives that remain live are **vendoring Nemo** — removes the crates.io blocker and pins semantics exactly, keeps the nightly requirement, takes on 230 crates of maintenance — and **waiting for Nemo to publish**, which is not actionable on this schedule.
+   Revisit if publication of `gix-query` becomes a requirement, or if a Nemo bump ever fails the conformance suite in a way we cannot work around above the lowering.
 6. **Gate evaluation point — the biggest product call here.**
    Pre-receive versus merge/promotion (§5).
    Moving gates to promotion removes the push-path DoS surface entirely; the price is that authors learn about gate failures later, softened but not erased by an advisory pre-check.
