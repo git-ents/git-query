@@ -278,6 +278,30 @@ mod tests {
         assert!(matches!(err, HostError::NoProvider(_)));
     }
 
+    /// `bind` is `(+Anchor, +Rev, -Blob, -Start, -End, -Position, -Content)`
+    /// -- both leading arguments required bound. A free anchor must be
+    /// refused rather than treated as "no rows", since silently returning
+    /// empty for an unsupported mode is indistinguishable from a real
+    /// "nothing binds here" answer.
+    #[test]
+    fn bind_refuses_a_free_anchor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        let head = f.commit_file("a.txt", "a\n", "first");
+        let repo = f.open();
+        let key = PredicateKey::new("bind", 7);
+
+        let mut out = Vec::new();
+        let err = RepoBuiltins::new(&repo)
+            .call(
+                &key,
+                &[None, Some(Value::sym(head)), None, None, None, None, None],
+                &mut out,
+            )
+            .expect_err("bind must refuse a free anchor");
+        assert!(matches!(err, HostError::UnsupportedMode { .. }));
+    }
+
     fn attach_position(repo: &gix::Repository, anchor: Anchor) -> ObjectId {
         Store::open(repo)
             .attach(&Binding::Position(anchor), b"claim body", None)

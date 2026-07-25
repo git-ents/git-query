@@ -131,4 +131,48 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].values, vec![Value::sym(second), Value::sym(first)]);
     }
+
+    #[test]
+    fn parent_all_free_is_refused_rather_than_enumerated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.commit_file("a.txt", "a\n", "first");
+        let repo = f.open();
+        let key = PredicateKey::new("parent", 2);
+
+        let Err(err) = parent_facts(&repo, &key, &[None, None], false) else {
+            panic!("keyed predicate must refuse a free child");
+        };
+        assert!(matches!(err, HostError::UnsupportedMode { .. }));
+    }
+
+    /// `parent/2` must preserve a merge commit's own parent order -- the
+    /// first-parent convention every git tool relies on -- pinned against a
+    /// real merge rather than assumed from `parent_walks_one_generation`'s
+    /// single-parent case.
+    #[test]
+    fn parent_preserves_a_merge_commits_own_parent_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        let base = f.commit_file("a.txt", "a\n", "base");
+        f.git(&["checkout", "--quiet", "-b", "topic"]);
+        let topic = f.commit_file("b.txt", "b\n", "topic");
+        f.git(&["checkout", "--quiet", "main"]);
+        f.git(&["merge", "--no-ff", "--quiet", "-m", "merge", "topic"]);
+        let merge = f.rev_parse("HEAD");
+        let repo = f.open();
+        let key = PredicateKey::new("parent", 2);
+
+        let out: Vec<_> = parent_facts(
+            &repo,
+            &key,
+            &[Some(Value::sym(merge.as_str())), None],
+            false,
+        )
+        .expect("facts")
+        .collect::<Result<_, _>>()
+        .expect("ok");
+        let parents: Vec<_> = out.iter().map(|f| f.values[1].clone()).collect();
+        assert_eq!(parents, vec![Value::sym(base), Value::sym(topic)]);
+    }
 }

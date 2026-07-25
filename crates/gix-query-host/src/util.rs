@@ -171,4 +171,52 @@ mod tests {
             member_id(&key, "Test Author".into(), "author@example.com".into()).expect("member id");
         assert_eq!(padded, bare);
     }
+
+    /// `count_lines`'s convention -- a final line missing a trailing
+    /// newline still counts -- pinned against git's own blob bytes rather
+    /// than trusted from the doc comment: `git cat-file -p` returns the
+    /// object verbatim, so counting newlines in *that* output and adding one
+    /// for an unterminated final line is an independent recomputation of the
+    /// same convention over the same bytes git itself stored.
+    #[test]
+    fn count_lines_matches_a_manual_count_of_gits_own_bytes_for_an_unterminated_final_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = test_support::Fixture::init(dir.path().join("r"));
+        let oid = f.hash_object("a\nb\nc");
+        let repo = f.open();
+        let key = PredicateKey::new("line", 2);
+        let blob = gix::ObjectId::from_hex(oid.as_bytes()).expect("valid oid");
+
+        let got = count_lines(&repo, &key, blob).expect("count");
+
+        let raw = std::process::Command::new("git")
+            .arg("-C")
+            .arg(f.root())
+            .args(["cat-file", "-p", &oid])
+            .output()
+            .expect("run git cat-file")
+            .stdout;
+        let newlines = raw.iter().filter(|&&b| b == b'\n').count();
+        let unterminated_final_line = !raw.is_empty() && raw.last() != Some(&b'\n');
+        let expected = newlines + usize::from(unterminated_final_line);
+
+        assert_eq!(got, expected as u64);
+        assert_eq!(
+            got, 3,
+            "a, b, c -- the unterminated final line still counts"
+        );
+    }
+
+    #[test]
+    fn count_lines_is_zero_for_an_empty_blob() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = test_support::Fixture::init(dir.path().join("r"));
+        let oid = f.hash_object("");
+        let repo = f.open();
+        let key = PredicateKey::new("line", 2);
+        let blob = gix::ObjectId::from_hex(oid.as_bytes()).expect("valid oid");
+
+        let got = count_lines(&repo, &key, blob).expect("count");
+        assert_eq!(got, 0);
+    }
 }

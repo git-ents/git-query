@@ -65,4 +65,18 @@ mod tests {
             vec![Value::sym(head), Value::sym(expected_member)]
         );
     }
+
+    #[test]
+    fn author_all_free_is_refused_rather_than_enumerated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Fixture::init(dir.path().join("r"));
+        f.commit_file("a.txt", "a\n", "first");
+        let repo = f.open();
+        let key = PredicateKey::new("author", 2);
+
+        let Err(err) = facts(&repo, &key, &[None, None], false) else {
+            panic!("keyed predicate must refuse a free commit");
+        };
+        assert!(matches!(err, HostError::UnsupportedMode { .. }));
+    }
 }
