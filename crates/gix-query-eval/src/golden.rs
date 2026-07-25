@@ -630,6 +630,10 @@ fn unrewritten(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
         demand: Vec::new(),
         eager,
         answer,
+        // The oracle never faces a fully-bound (zero-select) goal in this
+        // module's fixtures today, so it does not need `rewrite::rewrite`'s
+        // arity-0 padding; if that changes, this must gain the same padding.
+        answer_is_nullary: false,
     }
 }
 

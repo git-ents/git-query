@@ -171,7 +171,10 @@ pub fn run_to_fixpoint(
         }
 
         if outcome == RoundOutcome::Converged {
-            let answer = engine::relation(&mut engine, &rewritten.answer)?;
+            let mut answer = engine::relation(&mut engine, &rewritten.answer)?;
+            if rewritten.answer_is_nullary {
+                answer = answer.into_iter().map(|_| Vec::new()).collect();
+            }
             return Ok(LoopResult {
                 rounds: round,
                 log: CallLog(log),
@@ -322,6 +325,71 @@ mod tests {
             .collect();
         answer.sort();
         assert_eq!(answer, vec![s("blob1"), s("blob2")]);
+    }
+
+    /// A bare `q/2` EDB predicate and nothing else -- no rules, so no
+    /// unguarded builtin call site to demand eagerly.
+    fn edb_only_program() -> CheckedProgram {
+        let mut registry = Registry::host();
+        edb_enumerable(&mut registry, "q", 2);
+        CheckedProgram::assemble(
+            Program::new(),
+            registry,
+            Stratification::default(),
+            Map::new(),
+            Map::new(),
+        )
+    }
+
+    #[test]
+    fn a_fully_bound_query_returns_existence_not_a_spurious_column() {
+        // The rewrite pads a zero-`select` goal's answer to arity 1 so it
+        // can lower to Nemo at all; this is the readback half, checking
+        // that padding never leaks into what a fully-bound tier-1 query
+        // actually returns.
+        let checked = edb_only_program();
+        let facts = StubTable::new().with(
+            PredicateKey::new("q", 2),
+            vec![vec![s("a1"), s("r1")], vec![s("a2"), s("r1")]],
+        );
+        let builtins = StubTable::new();
+
+        let present = Goal::new(
+            vec![Literal::Positive(Atom::new(
+                "q",
+                vec![Term::sym("a1"), Term::sym("r1")],
+            ))],
+            vec![],
+        );
+        let rewritten = rewrite(&checked, &present);
+        assert!(rewritten.answer_is_nullary);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+        emitted.audit().expect("audit passes");
+        let result =
+            run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        assert_eq!(
+            result.answer,
+            vec![Vec::new()],
+            "one empty row signals the query holds, not a row carrying the padding constant"
+        );
+
+        let absent = Goal::new(
+            vec![Literal::Positive(Atom::new(
+                "q",
+                vec![Term::sym("nope"), Term::sym("r1")],
+            ))],
+            vec![],
+        );
+        let rewritten = rewrite(&checked, &absent);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+        emitted.audit().expect("audit passes");
+        let result =
+            run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        assert_eq!(
+            result.answer,
+            Vec::<Vec<Value>>::new(),
+            "no rows signals the query does not hold"
+        );
     }
 
     #[test]

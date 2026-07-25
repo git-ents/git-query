@@ -1,13 +1,15 @@
 //! `git query` -- the one binary.
 //!
-//! Tier 3 (`run --goal … --select …`), `predicates`, and `rules add|list` are
-//! wired up. Tiers 1 and 2 and `explain` are not implemented yet.
+//! Tier 1 (`run <predicate> --bind …`), tier 3 (`run --goal … --select …`),
+//! `predicates`, and `rules add|list|check` are wired up. Tier 2 and
+//! `explain` are not implemented yet.
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
 
+use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use gix_query::{HostRegistry, RuleStore};
+use gix_query::{HostRegistry, RuleStore, Value};
 
 #[derive(Parser)]
 #[command(name = "git-query", bin_name = "git query")]
@@ -19,12 +21,27 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run a query.
+    ///
+    /// Tier 1: `git query run <predicate> --bind <position>=<value>`. Bound
+    /// positions filter; every other position becomes an output column, in
+    /// signature order.
+    ///
+    /// Tier 3: `git query run --goal '<datalog>' --select Var1,Var2`.
     Run {
-        /// The goal body, e.g. `commit(Rev), parent(Rev, P)`.
+        /// Tier 1: the predicate to query, e.g. `reviewed` or
+        /// `review.reviewed`. Omit and use `--goal` for tier 3 instead.
+        #[arg(conflicts_with = "goal")]
+        predicate: Option<String>,
+        /// Tier 1: bind an argument position to a value, `<position>=<value>`.
+        /// Repeatable. Positions are 0-indexed into the predicate's declared
+        /// signature.
+        #[arg(long = "bind", value_name = "POSITION=VALUE")]
+        bind: Vec<String>,
+        /// Tier 3: the goal body, e.g. `commit(Rev), parent(Rev, P)`.
         #[arg(long)]
-        goal: String,
-        /// Which variables to project, in output-column order.
-        #[arg(long, value_delimiter = ',', required = true)]
+        goal: Option<String>,
+        /// Tier 3: which variables to project, in output-column order.
+        #[arg(long, value_delimiter = ',')]
         select: Vec<String>,
         /// Which repository to query. Defaults to discovering one from the
         /// current directory.
@@ -92,7 +109,23 @@ fn main() -> ExitCode {
 /// ran cleanly and found nothing.
 fn run(command: Command) -> anyhow::Result<bool> {
     match command {
-        Command::Run { goal, select, repo } => run_goal(&goal, &select, repo),
+        Command::Run {
+            predicate,
+            bind,
+            goal,
+            select,
+            repo,
+        } => match (predicate, goal) {
+            (Some(predicate), None) => run_predicate(&predicate, &bind, repo),
+            (None, Some(goal)) => {
+                if select.is_empty() {
+                    bail!("--goal requires --select");
+                }
+                run_goal(&goal, &select, repo)
+            }
+            (None, None) => bail!("run requires either a predicate or --goal"),
+            (Some(_), Some(_)) => unreachable!("clap rejects predicate together with --goal"),
+        },
         Command::Predicates => {
             print_predicates();
             Ok(true)
@@ -148,13 +181,52 @@ fn run_goal(
     let repo = open_repo(repo)?;
     let select: Vec<&str> = select.iter().map(String::as_str).collect();
     let rows = gix_query::run_goal(&repo, goal, &select)?;
+    print_rows(&rows);
+    Ok(!rows.is_empty())
+}
 
-    for row in &rows {
+fn run_predicate(
+    predicate: &str,
+    bind: &[String],
+    repo: Option<std::path::PathBuf>,
+) -> anyhow::Result<bool> {
+    let repo = open_repo(repo)?;
+    let bound: Vec<(usize, Value)> = bind
+        .iter()
+        .map(|s| parse_bind(s))
+        .collect::<Result<_, _>>()?;
+    let rows = gix_query::run_predicate(&repo, predicate, &bound)?;
+    print_rows(&rows);
+    Ok(!rows.is_empty())
+}
+
+/// Parse one `--bind` argument, `<position>=<value>`.
+fn parse_bind(arg: &str) -> anyhow::Result<(usize, Value)> {
+    let (position, value) = arg
+        .split_once('=')
+        .with_context(|| format!("`--bind {arg}` is not `<position>=<value>`"))?;
+    let position: usize = position
+        .parse()
+        .with_context(|| format!("`--bind {arg}`: `{position}` is not a position"))?;
+    Ok((position, parse_value(value)))
+}
+
+/// A bare CLI argument is an integer if it parses as one, otherwise a
+/// symbol -- an oid, a refname, a path, a member handle, or a closed-domain
+/// atom such as `approve`. There is no separate quoting on the command
+/// line, unlike in goal text.
+fn parse_value(s: &str) -> Value {
+    match s.parse::<i64>() {
+        Ok(n) => Value::Int(n),
+        Err(_) => Value::Sym(s.into()),
+    }
+}
+
+fn print_rows(rows: &[Vec<Value>]) {
+    for row in rows {
         let cols: Vec<String> = row.iter().map(ToString::to_string).collect();
         println!("{}", cols.join("\t"));
     }
-
-    Ok(!rows.is_empty())
 }
 
 fn print_predicates() {

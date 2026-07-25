@@ -33,6 +33,7 @@ fn every_symbol_we_emit_is_quoted_never_a_bare_identifier() {
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),
         answer: PredicateKey::new("out", 1),
+        answer_is_nullary: false,
     };
     let emitted = NemoProgram::emit(&rewritten).expect("emits");
     let mut engine = run(&emitted, &NemoTables::new()).expect("nemo runs");
@@ -69,6 +70,7 @@ fn an_anonymous_body_term_is_accepted_by_nemos_own_parser() {
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),
         answer: PredicateKey::new("out", 1),
+        answer_is_nullary: false,
     };
     let emitted = NemoProgram::emit(&rewritten).expect("emits");
     emitted.audit().expect("audit passes");
@@ -277,6 +279,7 @@ fn a_predicate_defined_by_both_a_ground_fact_and_a_rule_is_a_nemo_storage_bug() 
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),
         answer: PredicateKey::new("ans", 2),
+        answer_is_nullary: false,
     };
     let emitted = NemoProgram::emit(&rewritten).expect("emits");
     let mut tables = NemoTables::new();
@@ -330,6 +333,7 @@ fn two_rules_with_an_identical_ground_body_but_different_heads_both_derive() {
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),
         answer: PredicateKey::new("carries4b", 2),
+        answer_is_nullary: false,
     };
     let emitted = NemoProgram::emit(&rewritten).expect("emits");
     let mut tables = NemoTables::new();

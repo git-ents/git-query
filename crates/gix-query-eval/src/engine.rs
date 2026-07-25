@@ -303,6 +303,7 @@ mod tests {
             demand: Vec::new(),
             eager: std::iter::once(PredicateKey::new("member", 1)).collect(),
             answer: PredicateKey::new("out", 1),
+            answer_is_nullary: false,
         };
         let nemo_program = NemoProgram::emit(&rewritten).expect("emits");
         nemo_program.audit().expect("audit passes");

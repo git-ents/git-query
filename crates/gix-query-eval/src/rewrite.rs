@@ -54,7 +54,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gix_query_ir::{
     Adornment, ArgSet, Atom, CheckedProgram, Goal, GoalAdornments, Literal, PredicateKey, Program,
-    Registry, RewriteKind, Rule, RuleId, RuleOrigin, SpannedTerm, Term, Var,
+    Registry, RewriteKind, Rule, RuleId, RuleOrigin, SpannedTerm, Term, Value, Var,
 };
 
 /// Which side of the seam answers a [`DemandSite`].
@@ -124,6 +124,15 @@ pub struct RewrittenProgram {
     /// The answer relation's key -- `magic_answer_<n>`, arity equal to the
     /// goal's `select` length -- so [`crate::engine`] knows what to read back.
     pub answer: PredicateKey,
+    /// True when the goal's `select` was empty (every argument bound, so
+    /// there is no free column to project). Nemo's own atom grammar accepts
+    /// no arity-0 atom, so `answer` in that case is padded to arity 1 with a
+    /// synthetic constant column purely to satisfy the grammar; this flag is
+    /// what tells [`crate::demand::run_to_fixpoint`] to strip that column
+    /// back off before returning rows, so the boolean "does this hold"
+    /// question still comes back as zero or one empty row rather than a
+    /// spurious column nothing in the goal asked for.
+    pub answer_is_nullary: bool,
 }
 
 /// The reserved arity-suffixed name for the synthetic rule that computes a
@@ -356,7 +365,7 @@ impl<'a> Builder<'a> {
     /// Rewrite the goal body into the answer rule, collecting demand exactly
     /// as for a source rule's body but with no guard (a goal has no caller to
     /// demand it) and [`RewriteKind::MagicSeed`] on whatever it demands.
-    fn visit_goal(&mut self, goal: &Goal, adornments: &GoalAdornments) -> PredicateKey {
+    fn visit_goal(&mut self, goal: &Goal, adornments: &GoalAdornments) -> (PredicateKey, bool) {
         let mut prefix: Vec<Literal> = Vec::with_capacity(goal.body.len());
         for (i, lit) in goal.body.iter().enumerate() {
             let adornment = &adornments.body[i];
@@ -364,14 +373,27 @@ impl<'a> Builder<'a> {
             prefix.push(lit.clone());
         }
 
-        let answer = answer_key(goal.select.len());
-        let head = Atom {
-            predicate: answer.clone(),
-            terms: goal
-                .select
+        // Nemo's atom grammar requires at least one argument (no
+        // propositional atoms), so a fully-bound goal -- zero free
+        // `select` variables -- cannot lower to an arity-0 answer relation.
+        // Pad it to arity 1 with a synthetic constant instead; `visit_goal`
+        // returns the true arity separately so the caller can tell the two
+        // cases apart.
+        let nullary = goal.select.is_empty();
+        let answer = answer_key(goal.select.len().max(1));
+        let terms = if nullary {
+            vec![SpannedTerm::synthetic(Term::Const(Value::Sym(
+                "holds".into(),
+            )))]
+        } else {
+            goal.select
                 .iter()
                 .map(|v| SpannedTerm::synthetic(Term::Var(v.clone())))
-                .collect(),
+                .collect()
+        };
+        let head = Atom {
+            predicate: answer.clone(),
+            terms,
             span: goal.span,
         };
         let body_map = goal.body.iter().enumerate().map(|(i, _)| Some(i)).collect();
@@ -385,7 +407,7 @@ impl<'a> Builder<'a> {
                 body_map,
             }),
         });
-        answer
+        (answer, nullary)
     }
 }
 
@@ -424,7 +446,7 @@ pub fn rewrite(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
     }
 
     let goal_adornments = adorn_body(&goal.body);
-    let answer = builder.visit_goal(goal, &goal_adornments);
+    let (answer, answer_is_nullary) = builder.visit_goal(goal, &goal_adornments);
 
     let mut program = Program::new();
     for rule in builder.generated {
@@ -449,6 +471,7 @@ pub fn rewrite(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
         demand,
         eager: builder.eager,
         answer,
+        answer_is_nullary,
     }
 }
 
@@ -868,6 +891,45 @@ mod tests {
             answer_rule.head.terms[0].term,
             Term::var("B"),
             "select order must be preserved, not body order"
+        );
+    }
+
+    #[test]
+    fn a_fully_bound_goal_pads_the_answer_to_arity_one_and_marks_it_nullary() {
+        // Nemo's own atom grammar has no arity-0 atom, so a goal with an
+        // empty `select` -- every argument bound, a pure "does this hold"
+        // check -- must not mint an arity-0 answer relation, or lowering it
+        // fails the emission audit before a single row can come back.
+        let mut f = Fixture::new();
+        f.idb_bound("reach", 1, &[0]);
+        f.rule(
+            Rule::new(
+                Atom::new("reach", vec![Term::var("Rev")]),
+                vec![pos("commit", &["Rev"])],
+            ),
+            &[0],
+        );
+        let checked = f.checked();
+        let goal = Goal::new(
+            vec![Literal::Positive(Atom::new(
+                "reach",
+                vec![Term::sym("HEAD")],
+            ))],
+            vec![],
+        );
+        let rewritten = rewrite(&checked, &goal);
+        assert!(rewritten.answer_is_nullary);
+        assert_eq!(rewritten.answer.arity, 1);
+        let answer_rule = rewritten
+            .rules
+            .rules()
+            .iter()
+            .find(|r| r.head.predicate == rewritten.answer)
+            .expect("answer rule");
+        assert_eq!(answer_rule.head.terms.len(), 1);
+        assert!(
+            matches!(answer_rule.head.terms[0].term, Term::Const(_)),
+            "the padding column must be a constant, not a variable nothing selects"
         );
     }
 

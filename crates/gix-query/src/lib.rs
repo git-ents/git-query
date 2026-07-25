@@ -10,9 +10,9 @@
 #![deny(missing_docs)]
 
 use gix_query_host::{AllBuiltins, RepoFacts};
-use gix_query_ir::{CheckedProgram, Registry, Value};
+use gix_query_ir::{CheckedProgram, Registry};
 
-pub use gix_query_ir::Registry as HostRegistry;
+pub use gix_query_ir::{Registry as HostRegistry, Value};
 pub use gix_query_rules::RuleStore;
 
 /// Join a list of diagnostics into one message, one per line.
@@ -37,6 +37,19 @@ pub enum QueryError {
     /// The goal itself failed validation against the checked program.
     #[error("goal failed validation:\n{0}")]
     CheckGoal(String),
+    /// Tier 1 named a predicate the checked program does not declare.
+    #[error("no predicate named `{0}`")]
+    UnknownPredicate(String),
+    /// Tier 1 bound a position outside the predicate's declared arity.
+    #[error("position {position} is outside `{predicate}`'s arity {arity}")]
+    BindOutOfRange {
+        /// The predicate named.
+        predicate: String,
+        /// The position given.
+        position: usize,
+        /// The predicate's actual arity.
+        arity: usize,
+    },
     /// Lowering the rewritten program to Nemo, or auditing that emission,
     /// failed.
     #[error(transparent)]
@@ -82,9 +95,63 @@ pub fn run_goal(
         .map_err(|e| QueryError::Parse(join(&e)))?;
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    gix_query_check::check_goal(&goal, &checked).map_err(|e| QueryError::CheckGoal(join(&e)))?;
+    run_checked_goal(repo, &checked, &goal)
+}
 
-    let rewritten = gix_query_eval::rewrite_program(&checked, &goal);
+/// Tier 1: apply `predicate` with `bound` values at the given argument
+/// positions. Every other position becomes an output column, in signature
+/// order -- "bound args filter, free args become columns."
+///
+/// `predicate` is looked up by name against [`checked_program`]'s registry,
+/// so it may be a bare host predicate or builtin name, or a rule module's
+/// qualified `pub` name (e.g. `review.reviewed`), exactly as tier 3 resolves
+/// names in goal text.
+///
+/// # Errors
+/// See [`QueryError`]. [`QueryError::UnknownPredicate`] and
+/// [`QueryError::BindOutOfRange`] are tier 1's own; the rest are shared with
+/// [`run_goal`].
+pub fn run_predicate(
+    repo: &gix::Repository,
+    predicate: &str,
+    bound: &[(usize, Value)],
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program(repo)?;
+
+    let key = checked
+        .registry()
+        .predicates()
+        .find(|entry| entry.key.name.as_ref() == predicate)
+        .map(|entry| entry.key.clone())
+        .ok_or_else(|| QueryError::UnknownPredicate(predicate.to_owned()))?;
+
+    for (position, _) in bound {
+        if *position >= key.arity {
+            return Err(QueryError::BindOutOfRange {
+                predicate: predicate.to_owned(),
+                position: *position,
+                arity: key.arity,
+            });
+        }
+    }
+
+    let mut goal = gix_query_parse::goal_from_predicate(key.name.clone(), key.arity, bound);
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    run_checked_goal(repo, &checked, &goal)
+}
+
+/// Shared tail of tiers 1 and 3: validate a resolved [`gix_query_ir::Goal`]
+/// against `checked`, magic-set rewrite it, lower it to Nemo, audit the
+/// emission, and run it to a demand fixpoint against `repo`.
+fn run_checked_goal(
+    repo: &gix::Repository,
+    checked: &CheckedProgram,
+    goal: &gix_query_ir::Goal,
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    gix_query_check::check_goal(goal, checked).map_err(|e| QueryError::CheckGoal(join(&e)))?;
+
+    let rewritten = gix_query_eval::rewrite_program(checked, goal);
     let emitted = gix_query_eval::NemoProgram::emit(&rewritten)?;
     emitted.audit()?;
 
