@@ -25,19 +25,30 @@
 //!
 //! Every literal's adornment is already computed -- for rule bodies, by
 //! whatever produced the [`CheckedProgram`]; for a goal body, by
-//! [`adorn_body`] here, using the identical left-to-right algorithm. Neither
-//! this module nor its caller searches for a binding order: the order is the
-//! one the author wrote.
+//! [`adorn_body`] here, using the same left-to-right walk. Neither this
+//! module nor its caller searches for a binding order: the order is the one
+//! the author wrote.
+//!
+//! Left-to-right gives the *call-site* binding, which is not the same thing
+//! as the adornment a demand site is keyed on. A guarded IDB predicate has
+//! exactly one guard, adorned by its own required-bound set, and the rewrite
+//! never renames a call site to match -- so whatever the call site binds
+//! (more than required, or, for a negated literal, everything), the demand
+//! this module mints for a guarded callee is always projected onto that
+//! callee's own required-bound set. [`Builder::visit_literal`] is the one
+//! place this projection happens, which is what lets it apply uniformly to a
+//! rule body's already-narrowed adornment and a goal body's raw one alike.
 //!
 //! # What is emitted, and why it is enough
 //!
 //! For every rule whose head predicate is adorned, a demand guard is
 //! inserted at body position 0 (recorded in [`RuleOrigin::body_map`], so a
 //! later literal's original index survives the shift). For every literal
-//! anywhere -- rule body or goal body -- whose call-site adornment is
-//! non-empty, a magic rule collects the concrete bound tuple demanded at that
-//! point, from the guard (if any) and the literal prefix before it. A literal
-//! calling a host predicate never changes; only the magic collector is new.
+//! anywhere -- rule body or goal body -- whose demand adornment (see
+//! [`Builder::demand_adornment`]) is non-empty, a magic rule collects the
+//! concrete bound tuple demanded at that point, from the guard (if any) and
+//! the literal prefix before it. A literal calling a host predicate never
+//! changes; only the magic collector is new.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -126,16 +137,25 @@ fn answer_key(arity: usize) -> PredicateKey {
     PredicateKey::new(format!("{}answer", PredicateKey::MAGIC_PREFIX), arity)
 }
 
-/// Compute the adornment of every literal in a goal body, left to right.
+/// Compute the raw call-site adornment of every literal in a goal body, left
+/// to right.
 ///
 /// This is the one place the rewrite computes an adornment rather than
 /// consuming one `gix-query-check` already produced -- a goal is issued at
-/// query time, with no rule behind it for a validator to have annotated.
-/// The algorithm is the same one pass 8 runs on a rule body: a position starts
-/// bound exactly when its term is a constant, and every variable a positive or
-/// builtin literal touches becomes bound for everything after it. A negated
-/// literal or a comparison is a filter and cannot bind a fresh variable, which
-/// range restriction already guarantees holds by the time this runs.
+/// query time, with no rule behind it for a validator to have annotated. A
+/// position starts bound exactly when its term is a constant, and every
+/// variable a positive or builtin literal touches becomes bound for
+/// everything after it. A negated literal or a comparison is a filter and
+/// cannot bind a fresh variable, which range restriction already guarantees
+/// holds by the time this runs.
+///
+/// Unlike pass 8's `body_adornment`, this function does *not* narrow a
+/// derived call down to the callee's own required-bound set -- it has no
+/// registry to narrow against, and does not need one: [`Builder::visit_literal`]
+/// applies that projection uniformly to whatever adornment it is handed,
+/// goal or rule body alike. What this function returns is purely the
+/// call-site binding, used to decide what is bound for the *next* literal in
+/// the same body and nothing more.
 #[must_use]
 pub fn adorn_body(body: &[Literal]) -> GoalAdornments {
     let mut bound_vars: BTreeSet<Var> = BTreeSet::new();
@@ -218,6 +238,39 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The adornment a demand site for `key` must be keyed on.
+    ///
+    /// For a guarded IDB predicate this is `key`'s own required-bound set,
+    /// unconditionally -- never the call site's binding. `visit_rule` guards
+    /// `key`'s defining rule on exactly that set, and the rewrite never
+    /// renames a call site, so there is exactly one guard for `key` to feed.
+    /// A call site that binds more than required (mode discipline allows
+    /// that) or that is forced to bind everything because it is negated
+    /// (range restriction requires that) would otherwise mint a demand
+    /// relation under a *different* adornment than the guard reads: demand
+    /// produced, never consumed, `key` derives nothing. For a positive
+    /// caller that is silent under-derivation; for `!key(...)` it is
+    /// over-derivation, since vacuous truth follows from `key` wrongly
+    /// staying empty. Every other kind of call site -- EDB, builtin -- has
+    /// no guard to align with, so its call-site adornment is definitionally
+    /// the right one to key demand on.
+    fn demand_adornment(
+        &self,
+        key: &PredicateKey,
+        kind: DemandKind,
+        call_site: &Adornment,
+    ) -> Adornment {
+        if kind != DemandKind::Idb {
+            return call_site.clone();
+        }
+        let required = self
+            .registry
+            .predicate(key)
+            .and_then(gix_query_ir::PredicateEntry::always_required_bound)
+            .unwrap_or_default();
+        Adornment::new(required, key.arity)
+    }
+
     /// Process one literal at body position `i`, recording eager/demand
     /// obligations. `prefix` is everything at positions `< i` in the rule (or
     /// goal) as it will appear in the *generated* body, guard included, so a
@@ -237,6 +290,7 @@ impl<'a> Builder<'a> {
         };
         let key = atom.predicate.clone();
         let kind = classify(&key, self.registry);
+        let adornment = &self.demand_adornment(&key, kind, adornment);
         if !adornment.is_adorned() {
             if kind == DemandKind::Edb {
                 self.eager.insert(key);
