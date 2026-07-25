@@ -1,0 +1,4 @@
+# Nemo's crates use `#![feature(...)]`, so this crate cannot be built by a
+# stable compiler. Nothing else in the workspace inherits this.
+[toolchain]
+channel = "nightly"

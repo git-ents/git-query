@@ -1,0 +1,27 @@
+# Its own workspace, deliberately. Nemo uses `#![feature(...)]`, so anything
+# linking it needs a nightly compiler; keeping this crate out of the root
+# workspace is what lets `cargo test --workspace` stay a stable-toolchain
+# command. See DEVPLAN.md §2.11.
+[workspace]
+
+[package]
+name = "gix-query-engine-nemo"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "An optional Nemo adapter for the git-query engine seam. Nightly-only, not published."
+publish = false
+
+[dependencies]
+gix-query-engine = { path = "../gix-query-engine" }
+gix-query-ir = { path = "../gix-query-ir" }
+thiserror = "2"
+# Pinned to an exact commit, never a branch: a version bump is a semantics
+# change and goes through the upgrade audit in CONTRIBUTING.md.
+nemo = { git = "https://github.com/knowsys/nemo", rev = "4415bc2e180adf33a7a4b98ddc41be9914b7584e" }
+nemo-physical = { git = "https://github.com/knowsys/nemo", rev = "4415bc2e180adf33a7a4b98ddc41be9914b7584e" }
+async-trait = "0.1"
+
+[dev-dependencies]
+gix-query-engine-naive = { path = "../gix-query-engine-naive" }
+tokio = { version = "1", features = ["rt", "macros"] }

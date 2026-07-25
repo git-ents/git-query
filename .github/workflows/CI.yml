@@ -113,6 +113,30 @@ jobs:
       - name: Run doctests
         run: cargo test --doc --workspace --all-features
 
+  # The Nemo engine adapter is excluded from the root workspace because it
+  # links crates that use `#![feature(...)]` and so cannot be built by a stable
+  # compiler. That exclusion is what keeps every job above a stable-toolchain
+  # job -- and it also means nothing above would notice this crate rotting, so
+  # it gets a job of its own. Failures here do not block: the adapter is
+  # optional by design, and a broken nightly must not stop the shipping engine
+  # from merging. See DEVPLAN.md 2.11.
+  nemo:
+    name: nemo adapter (nightly, advisory)
+    continue-on-error: true
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          cache: true
+      # Single-threaded on purpose: Nemo's evaluator enters a process-global
+      # timing mutex, so concurrent runs in one process panic and poison it.
+      - name: Test the adapter
+        working-directory: crates/gix-query-engine-nemo
+        run: cargo test -- --test-threads=1
+
   ci:
     name: CI
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}

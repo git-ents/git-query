@@ -1242,7 +1242,9 @@ version = "0.1.0"
 dependencies = [
  "gix",
  "gix-query-check",
- "gix-query-eval",
+ "gix-query-demand",
+ "gix-query-engine",
+ "gix-query-engine-naive",
  "gix-query-host",
  "gix-query-ir",
  "gix-query-parse",
@@ -1264,10 +1266,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "gix-query-eval"
+name = "gix-query-demand"
+version = "0.1.0"
+dependencies = [
+ "gix-query-engine",
+ "gix-query-engine-naive",
+ "gix-query-ir",
+ "gix-query-parse",
+ "rstest",
+ "thiserror",
+]
+
+[[package]]
+name = "gix-query-engine"
+version = "0.1.0"
+dependencies = [
+ "gix-query-ir",
+ "thiserror",
+]
+
+[[package]]
+name = "gix-query-engine-naive"
 version = "0.1.0"
 dependencies = [
  "gix-query-check",
+ "gix-query-engine",
  "gix-query-ir",
  "gix-query-parse",
  "proptest",
@@ -1302,7 +1325,8 @@ version = "0.1.0"
 dependencies = [
  "ascent",
  "gix-query-check",
- "gix-query-eval",
+ "gix-query-demand",
+ "gix-query-engine-naive",
  "gix-query-ir",
  "gix-query-parse",
  "proptest",
