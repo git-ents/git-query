@@ -222,9 +222,37 @@ fn render_literal(lit: &Literal) -> Result<String, EvalError> {
     })
 }
 
+/// Render a predicate name as a Nemo identifier.
+///
+/// A bare Nemo `Name` token is an ASCII letter followed by letters, digits,
+/// `_`, or `%` -- never `.` -- so a module-qualified name such as
+/// `review.reviewed` (see `gix_query_ir::PredicateKey`'s doc comment) cannot
+/// be written as a bare identifier at all. Nemo's grammar has a second, more
+/// general predicate-tag form for exactly this: `<...>`, an IRI reference,
+/// whose content becomes the resolved tag name verbatim -- `nemo`'s own
+/// `resolve_tag` returns an `Iri` tag's content completely unchanged, with
+/// no base or prefix expansion applied unlike its other two tag forms. That
+/// makes it an exact, lossless carrier for any name our own grammar
+/// produces, so only a name a bare identifier cannot express pays for the
+/// brackets; every other name keeps emitting the plain form untouched.
+pub(crate) fn render_predicate_name(name: &str) -> String {
+    if is_bare_nemo_name(name) {
+        name.to_owned()
+    } else {
+        format!("<{name}>")
+    }
+}
+
+/// Whether `name` is a legal bare Nemo `Name` token on its own.
+fn is_bare_nemo_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '%')
+}
+
 fn render_atom(atom: &Atom) -> Result<String, EvalError> {
     let mut out = String::new();
-    out.push_str(&atom.predicate.name);
+    out.push_str(&render_predicate_name(&atom.predicate.name));
     out.push('(');
     for (i, t) in atom.terms.iter().enumerate() {
         if i > 0 {

@@ -25,7 +25,7 @@ use nemo_physical::resource::Resource;
 use gix_query_ir::{PredicateKey, Value};
 
 use crate::error::EvalError;
-use crate::lower::{NemoProgram, NemoTables};
+use crate::lower::{NemoProgram, NemoTables, render_predicate_name};
 
 /// The URI scheme our in-memory resource provider claims. Never touches
 /// disk; the whole point of the memory-import route is that it doesn't have
@@ -59,7 +59,7 @@ pub(crate) fn run(
         let formats = column_formats(rows);
         text.push_str(&format!(
             "@import {} :- csv{{resource = \"{}\", format = ({formats})}} .\n",
-            key.name,
+            render_predicate_name(&key.name),
             resource_name(key),
         ));
         csv_tables.insert(resource_name(key), csv_of(rows));
