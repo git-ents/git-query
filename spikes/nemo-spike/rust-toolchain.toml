@@ -1,0 +1,4 @@
+# Nemo's own crates use `#![feature(...)]`, so anything that links them must be
+# built by a nightly compiler. This file is the spike's evidence for gate A6.
+[toolchain]
+channel = "nightly"
