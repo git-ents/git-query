@@ -1,10 +1,10 @@
 //! Small helpers shared by [`crate::facts`] and [`crate::bind`]: hex-oid
-//! parsing, a uniform way to box a backend failure, and blob line counting
-//! (the unit `line/2` counts in, and the unit a projection's span is
-//! expressed in too).
+//! parsing, a uniform way to box a backend failure, blob line counting (the
+//! unit `line/2` counts in, and the unit a projection's span is expressed in
+//! too), fact construction, and member-identity hashing.
 
-use gix::bstr::ByteSlice as _;
-use gix_query_ir::{HostError, PredicateKey, Value};
+use gix::bstr::{BStr, ByteSlice as _};
+use gix_query_ir::{Fact, HostError, PredicateKey, Value};
 
 /// Parse `value` as a lowercase-hex object id.
 ///
@@ -27,6 +27,23 @@ pub(crate) fn backend(
     HostError::Backend {
         key: key.clone(),
         source: Box::new(error),
+    }
+}
+
+/// Wrap an already-boxed backend failure as [`HostError::Backend`].
+///
+/// `gix`'s own reference-iteration API combines loose and packed refs behind
+/// one iterator and boxes its error for that reason, so its `Item` is already
+/// `Result<_, Box<dyn Error + Send + Sync>>` rather than a concrete error
+/// type -- [`backend`] cannot take it, because a trait object does not itself
+/// implement [`std::error::Error`].
+pub(crate) fn backend_boxed(
+    key: &PredicateKey,
+    source: Box<dyn std::error::Error + Send + Sync>,
+) -> HostError {
+    HostError::Backend {
+        key: key.clone(),
+        source,
     }
 }
 
@@ -60,4 +77,83 @@ pub(crate) fn count_lines(
         .map_err(|error| backend(key, error))?
         .take_data();
     Ok(u64::try_from(data.lines_with_terminator().count()).unwrap_or(u64::MAX))
+}
+
+/// `oid`, rendered as the [`Value`] every EDB provider hands back for an
+/// `Oid`-, `Rev`-, or `Member`-typed argument.
+///
+/// Every provider constructs this from an object id it just resolved rather
+/// than echoing the caller's own bound term back verbatim, so a query never
+/// observes a case difference between what it supplied and what came back --
+/// `gix::ObjectId`'s `Display` is the single source of truth for spelling.
+pub(crate) fn sym_oid(oid: gix::ObjectId) -> Value {
+    Value::sym(oid.to_string())
+}
+
+/// A [`Fact`], attributed to `source_ref` only when `attribute` asked for it.
+///
+/// The gate path always calls with `attribute: false`; building the
+/// attributed variant unconditionally would allocate a ref-name string on
+/// every row of every gate query for a field nothing reads.
+pub(crate) fn fact(values: Vec<Value>, source_ref: Option<&str>, attribute: bool) -> Fact {
+    match (attribute, source_ref) {
+        (true, Some(r)) => Fact::attributed(values, r.to_owned()),
+        _ => Fact::new(values),
+    }
+}
+
+/// The member identity for a git actor: the object id a blob containing
+/// `"<name> <email>"` would hash to, computed without writing anything to the
+/// object database.
+///
+/// [`parse_oid`]'s doc comment already commits `Member`-typed values to the
+/// same hex-text wire shape as `Rev` and `Oid`; a raw `name <email>` pair
+/// cannot be that shape, so every host predicate that produces or consumes a
+/// member identity (`author/2`, and the `refs/meta/members/*` layout
+/// `member/1` and `revoked/1` read) needs one deterministic mapping from an
+/// actor to a hex id. Hashing under git's own blob framing rather than a bare
+/// digest means `git hash-object` reproduces the same id for anyone
+/// registering a member ref by hand.
+pub(crate) fn member_id(
+    key: &PredicateKey,
+    name: &BStr,
+    email: &BStr,
+) -> Result<gix::ObjectId, HostError> {
+    let mut canonical = Vec::with_capacity(name.len() + email.len() + 3);
+    canonical.extend_from_slice(name.trim());
+    canonical.extend_from_slice(b" <");
+    canonical.extend_from_slice(email.trim());
+    canonical.push(b'>');
+    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, &canonical)
+        .map_err(|error| backend(key, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn member_id_matches_hash_object_of_the_canonical_identity_string() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = test_support::Fixture::init(dir.path().join("r"));
+        let expected = f.hash_object("Test Author <author@example.com>");
+        let key = PredicateKey::new("author", 2);
+        let id =
+            member_id(&key, "Test Author".into(), "author@example.com".into()).expect("member id");
+        assert_eq!(id.to_string(), expected);
+    }
+
+    #[test]
+    fn member_id_trims_surrounding_whitespace() {
+        let key = PredicateKey::new("author", 2);
+        let padded = member_id(
+            &key,
+            "  Test Author  ".into(),
+            "  author@example.com ".into(),
+        )
+        .expect("member id");
+        let bare =
+            member_id(&key, "Test Author".into(), "author@example.com".into()).expect("member id");
+        assert_eq!(padded, bare);
+    }
 }
