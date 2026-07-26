@@ -828,9 +828,10 @@ dependencies = [
 [[package]]
 name = "facet-git-tree"
 version = "0.1.0"
-source = "git+https://github.com/git-ents/git-store#54d984c319a23d87cb999ffc1e6701af9434cf56"
+source = "git+https://github.com/git-ents/git-store.git#506875ccfa8e20349f32b0e9427c67980341fb40"
 dependencies = [
  "facet",
+ "facet-value",
  "gix-hash",
  "gix-object",
  "gix-odb",
@@ -1244,9 +1245,10 @@ dependencies = [
 [[package]]
 name = "gix-anchor"
 version = "0.1.0"
+source = "git+https://github.com/git-ents/git-anchor.git#f244abe512915e5af345f0e0b843673cfeff48dc"
 dependencies = [
  "facet",
- "facet-git-tree 0.1.0 (git+https://github.com/git-ents/git-store)",
+ "facet-git-tree 0.1.0 (git+https://github.com/git-ents/git-store.git)",
  "gix",
  "gix-object",
  "thiserror",
@@ -1720,6 +1722,7 @@ dependencies = [
  "gix",
  "gix-anchor",
  "gix-query-ir",
+ "gix-store 0.1.0 (git+https://github.com/git-ents/git-store.git)",
  "rstest",
  "tempfile",
  "test-support",
@@ -1768,7 +1771,7 @@ dependencies = [
  "gix-query-check",
  "gix-query-ir",
  "gix-query-parse",
- "gix-store",
+ "gix-store 0.1.0",
  "rstest",
  "tempfile",
  "test-support",
@@ -1887,6 +1890,17 @@ name = "gix-store"
 version = "0.1.0"
 dependencies = [
  "facet-git-tree 0.1.0",
+ "facet-value",
+ "gix",
+ "thiserror",
+]
+
+[[package]]
+name = "gix-store"
+version = "0.1.0"
+source = "git+https://github.com/git-ents/git-store.git#506875ccfa8e20349f32b0e9427c67980341fb40"
+dependencies = [
+ "facet-git-tree 0.1.0 (git+https://github.com/git-ents/git-store.git)",
  "facet-value",
  "gix",
  "thiserror",
@@ -2438,9 +2452,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.34"
+version = "0.2.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e184d09547b80eb7e20d141ba2fb1fbac843ca53f4cf1b31210adc4c1adc6e16"
+checksum = "668b7183bd07af9a4885f5c35b0cc5c83c4607a913c16b7e17291832910d2dcc"
 dependencies = [
  "defmt",
  "jiff-core",
@@ -2464,9 +2478,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.34"
+version = "0.2.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "323da076b7a6faf914dc677cb05a4b907742ff7375c8322c9e7f5061e5e0e9de"
+checksum = "3a69dcb3a21cfb32ce1cd056169337ca284af0766dd766e7878819b251a49204"
 dependencies = [
  "jiff-core",
  "proc-macro2",
