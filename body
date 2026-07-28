@@ -1,0 +1,36 @@
+**What**
+The workspace splits ~18k lines of Rust across nine crates plus a test-support crate. Most of the split earns its keep. Two members do not currently, and the one boundary that is genuinely load-bearing is described in the README as something else.
+
+**Where**
+Measured (`find crates -name *.rs | xargs wc -l` gives 17,914 total):
+
+| crate | verdict |
+| --- | --- |
+| `gix-query-ir` | earns it -- `crates/gix-query-ir/src/host.rs:82-88` "the evaluator has no git dependency at all and can be property-tested over synthetic facts with no repository. That is the single most important structural constraint in this workspace." Correct, and enforced by the dependency graph. |
+| `gix-query-check` | earns it -- `crates/gix-query-check/src/lib.rs:35-37` "It has no git dependency and never will: pass 7 footprint is parameterized over the registry own backing-source data, never a repository." |
+| `gix-query-eval` | earns it -- the only crate permitted to name a `nemo` type (`DEVPLAN.md:870`), which is what makes the nightly blast radius knowable. |
+| `gix-query-host` | earns it -- the git side of the `FactSource` boundary. |
+| `gix-query-parse` | earns it. |
+| `gix-query-rules` | thin (three files, ~200 lines) but the git-store dependency justifies the separation from `check`. |
+| `gix-query-kernel` | **orphan.** No workspace crate depends on it; its `gix-query-*` deps are all dev-dependencies. |
+| `gix-query` | **163 lines**, three functions, no state. `crates/gix-query/src/lib.rs`. |
+| `git-query` | 237 lines. |
+
+**Why it matters**
+Less than most architecture complaints, which is why this is filed low. The split follows a real constraint -- who may depend on `gix`, who may depend on `nemo` -- and that constraint is enforced structurally rather than by comment, which is the good version of this. I would not merge `check` into `parse` or `eval` into `host`.
+
+Two things are worth naming anyway.
+
+`gix-query` is a facade over `gix-query-rules` plus `gix-query-eval` plus `gix-query-host` that adds a `join` helper and an error enum. It is credited with the footprint and acyclicity export (`README.md:56`) and has neither. Either it grows into the crate the README describes -- the place where footprints become gate-safety verdicts and cache keys, which is exactly where `crates/gix-query-check/src/pass7_footprint.rs:19-26` says those consumers belong -- or it is a re-export module and should not be a crate. Right now it is neither, and the README describes the version that does not exist.
+
+`gix-query-kernel` is a different case: good work with no consumer, which the trust-root issue covers. Its presence in the crate table without a caller makes the workspace look larger than the shipped system is.
+
+The undersold boundary: the README describes `gix-query-ir` as "the traits the engine reaches the world through -- the frozen seam". The traits are `FactSource` and `Builtin`, and what they actually buy is that `gix-query-eval` and `gix-query-check` can be tested with zero repository, over synthetic facts, including property tests. That is a stronger and more concrete claim than "seam", it is verifiable by reading `Cargo.toml` files, and it is the reason the nine-crate split is defensible rather than ceremonial. It deserves the sentence.
+
+**Options**
+- Option A -- leave the split, and rewrite the crate table to say what each boundary prevents rather than what it contains. "`gix-query-check`: the nine validation passes, and no git dependency, ever" says more than "the nine validation passes".
+- Option B -- A, plus grow `gix-query` into the crate the README already describes, since pass 7 explicitly designates it as the home for the footprint consumers.
+- Option C -- A, plus fold `gix-query` into `git-query` and drop it from the table until there is something in it. Smaller workspace, honest table, and reversible.
+
+**Recommendation**
+A regardless -- it costs a paragraph and converts a nine-row table that reads as over-engineering into evidence of a considered dependency policy. Then B if the footprint export gets built, C if it does not. Low confidence on B versus C and it does not much matter which; the split itself is fine and I would not spend conference time on it.
