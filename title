@@ -1,0 +1,1 @@
+Derived predicates get one required-bound ArgSet unioned over their rules, while EDB predicates get a ModeSet: no mode polymorphism above the base layer

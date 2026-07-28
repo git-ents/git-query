@@ -1,0 +1,31 @@
+**What**
+The mode system is deliberately asymmetric. A host EDB predicate carries a *set* of mode vectors, so `member/1` can be legally called both free (enumerate) and bound (test). A rule-defined predicate carries a single `ArgSet`, computed as the union of what its rules require. A derived predicate therefore cannot be callable two ways, even when every predicate it is built from can be.
+
+**Where**
+- `crates/gix-query-ir/src/registry.rs:175-190`:
+
+```rust
+Edb { modes: ModeSet, backing: Vec<Backing> },
+Idb { required_bound: Option<ArgSet> },
+```
+with the comment "Its required-bound set is inferred, not declared, and is the *union* over its rules -- conservative, so a caller that satisfies it satisfies every rule."
+- `crates/gix-query-ir/src/mode.rs:104-113` -- the `ModeSet` doc argues the set is "load-bearing rather than generality for its own sake" for exactly the `member/1` case.
+- `crates/gix-query-check/src/pass8_modes.rs:278-286` -- `*required_bound = Some(before.union(&new_bits))`.
+- `crates/gix-query-ir/src/mode.rs:143-153` -- `ModeSet::always_required` intersects; the IDB path unions. Opposite lattice directions, one for each class.
+
+**Why it matters**
+Three consequences, in increasing order of how much I think they matter.
+
+First, one expensive rule poisons a whole predicate. If `reviewed/1` has two rules and only one of them reaches an EDB literal that requires a bound argument, the union makes *every* call to `reviewed/1` require it, including calls that would only ever fire the cheap rule. The conservatism is sound; it is not tight, and the author gets no way to say so.
+
+Second, the abstraction boundary leaks. A module author wraps `member/1` -- callable both ways -- in `active_member/1` and gets something callable one way. The wrapper is strictly less usable than the thing it wraps, which is the wrong direction for an abstraction mechanism, and it is invisible until a call site fails mode checking with an error that names the wrapper rather than the rule that constrained it.
+
+Third and most interesting: modes do two jobs here. They are the safety property (this query is affordable) and they are the caching property (this result has a finite ref set to key on). Those two are *nearly* the same predicate but not identical -- a call can be affordable and uncacheable, or cheap enough that nobody cares. Fusing them into one inferred `ArgSet` means neither can be relaxed without relaxing the other. Right now that coupling costs nothing because the cache does not exist. When it does, this is the seam I would expect to crack: the first person who wants an affordable-but-uncached enumeration has nowhere to say it.
+
+**Options**
+- Option A -- leave it, and document the asymmetry as deliberate in `docs/query-and-rules.adoc`. It is a defensible choice: mode inference stays a single least fixpoint over a bitset union, which is fast and easy to explain, and mode-polymorphic IDB predicates mean either per-adornment specialization (a rule copy per call pattern) or a search, both of which the design explicitly rejects elsewhere.
+- Option B -- allow an explicit `mode` declaration on an exported predicate, checked rather than inferred, so an author can assert `pub reviewed(-B)` and have pass 8 verify that at least one rule supports it. Keeps inference for the unannotated case and gives the author an escape hatch at the module boundary -- which is also where the abstraction leak shows up.
+- Option C -- full adornment-directed specialization: infer per-adornment required-bound sets and let the magic-set rewrite emit a specialized copy per adornment. This is what the literature does, and the rewrite already computes per-literal adornments (`crates/gix-query-ir/src/mode.rs:222-247`), so the information is present. It multiplies rules and complicates derivation trees, which are currently isomorphic to source text -- a property worth a lot.
+
+**Recommendation**
+A now, B eventually. This is a genuine judgement call and I hold it loosely -- the union is sound and simple, and simplicity is the right default for a system whose selling point is that you can reason about it. But the asymmetry is currently undocumented, and someone will hit the wrapper case and read it as a bug. Writing it down as a deliberate limit, with the `member/1` versus `active_member/1` example spelled out, is the cheap part and should happen regardless. I would not do C.
