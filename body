@@ -1,0 +1,30 @@
+**What**
+There is no layer that turns a revision specifier into an object id. Host providers parse their arguments as literal lowercase hex, so `HEAD`, `main`, `v1.0`, and any abbreviated oid are rejected with a `gix` internal error. The type is named `Rev` and documented as accepting a revision.
+
+**Where**
+- `crates/gix-query-host/src/util.rs:15-21` -- `parse_oid` calls `gix::ObjectId::from_hex` directly, with the comment "by the time a value reaches a host provider it is always hex text, never an unresolved revspec". Nothing upstream makes that true.
+- `crates/gix-query-ir/src/registry.rs:24` -- `ValueType::Rev` is documented as "A commit id, **or a revision that resolves to one**".
+- `crates/git-query/src/main.rs:213-218` -- `parse_value` turns a CLI argument into `Value::Int` or `Value::Sym` with no resolution step.
+- `README.md:9,13,17` -- the demo uses `--rev HEAD` and `mergeable(HEAD)`.
+
+Reproduced:
+
+```
+$ git query run commit --bind 0=HEAD
+error: host failure reading commit/1: A hash sized 4 hexadecimal characters is invalid
+```
+
+`HEAD` is being read as the four hex-ish characters `HEAD` and rejected by the hash parser. Every working invocation in my session required pasting a full 40-character oid.
+
+**Why it matters**
+This is the whole demo. Three of the four commands in the README front page use `HEAD`. Nobody types a 40-hex oid at a conference, and the error message when they do not is a `gix` hash-length complaint that names neither the argument nor the fix.
+
+It also undercuts the CLI as a gate tool: a pre-receive hook has refnames and ranges, and `--in main..HEAD` is spec-ed (`docs/query-and-rules.adoc:441`) precisely because that is the shape of the input. A tool that only accepts resolved oids pushes revision parsing onto every caller, and every caller will do it slightly differently.
+
+**Options**
+- Option A -- resolve at the CLI boundary only. `parse_value` gains a repo handle and tries `repo.rev_parse_single` for arguments in `Rev`- or `Oid`-typed positions, falling back to a symbol otherwise. Keeps the invariant that host providers see resolved oids, which the cache-key design depends on. Needs the registry signature at parse time, which the tier-1 path already has.
+- Option B -- resolve in the host providers. Simpler to wire, but breaks the invariant that a `Value` reaching a provider is content-addressed, and puts a non-content-addressed input (what `HEAD` meant at the time) below the cache-key boundary. Do not do this.
+- Option C -- A, plus surface the resolution in output and in `explain`, so a run records the oid `HEAD` resolved to. That is what makes a decision replayable.
+
+**Recommendation**
+A, urgently, and C if the recording story gets built. High confidence -- the type documentation, the spec, and the README all already assume this exists.
