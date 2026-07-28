@@ -1,0 +1,30 @@
+**What**
+Result rows are printed in whatever order Nemo hands them back, tab-joined, with no header and no alternative format. The project own tests sort before asserting, which is the correct thing to do against an unordered relation and is also the evidence that CLI output order is not a contract.
+
+**Where**
+- `crates/git-query/src/main.rs:220-226` -- `print_rows` joins each row with tabs and prints. No sort, no header, no format switch.
+- `crates/gix-query/src/lib.rs:158` -- returns `result.answer` directly.
+- `crates/gix-query-eval/src/demand.rs:174` -- `answer` comes from `engine::relation`, i.e. Nemo internal iteration order.
+- `crates/gix-query-eval/src/demand.rs:326`, `:574` -- `answer.sort(); assert_eq!(...)`. The tests know.
+- `docs/query-and-rules.adoc:444-445` -- "A result is a relation: an unordered, deduplicated set of tuples. Columns are the free arguments in signature order. **That order is the tsv contract.**"
+- `docs/query-and-rules.adoc:441` -- `--format table|tsv|json` and `--order` are specified. Neither exists.
+- `crates/gix-query-parse/src/desugar.rs:19-23` -- "the CLI actual column headers come from the registry argument types". No headers are printed.
+
+Empirically, order was stable across three runs of a 14-row `tree_entry` query on my scratch repo -- but that is Nemo happening to preserve a sorted input, not a guarantee, and nothing pins it.
+
+**Why it matters**
+The most compelling use of this tool is a gate: run a query in CI, check the exit code, and show the operator the rows when it fails. That use has three requirements this output does not meet.
+
+1. **Determinism.** If output order can shift with a Nemo bump, a table-layout change, or the insertion order of eagerly-loaded facts, then every golden test a *user* writes around this tool is flaky, and every diff of "what changed since last run" is noise. The spec calls a result unordered, which is semantically right and operationally insufficient: the *rendering* must be a total order even when the relation is a set.
+2. **Machine readability.** A gate that wants to post "these three blobs are unreviewed" to a PR comment has to parse tab-separated columns whose meaning is positional and undocumented at the point of use. JSON is specified and absent.
+3. **Column identity.** A bare tsv of oids and paths with no header requires the reader to already know the signature -- which, per the separate `predicates` issue, they cannot look up.
+
+Related and smaller: a fully-bound tier-1 query prints a single empty line for "true" and nothing for "false" (`git query run commit --bind 0=<oid>` emits `\n`, exit 0). That is technically correct -- one zero-column row -- and reads as a bug. The `answer_is_nullary` handling at `crates/gix-query-eval/src/rewrite.rs:127-135` is careful and correct; the *rendering* of a nullary answer is what needs a decision.
+
+**Options**
+- Option A -- sort rows lexicographically in `print_rows` before emitting. One line, removes the whole class of nondeterminism, and costs nothing at the sizes involved since the fixpoint has already fully materialized (`docs/query-and-rules.adoc:462` -- "No streaming").
+- Option B -- A, plus `--format tsv|json`, with JSON carrying column names and types from the registry. This is what makes the gate story real.
+- Option C -- B, plus decide the nullary rendering explicitly: print nothing and rely on the exit code, or print `true`. Either is fine; the current empty line is the one answer that is not.
+
+**Recommendation**
+A immediately -- it is one line and it converts an unstated assumption into a guarantee. B before claiming the CI story. C whenever the formatter is touched. High confidence on A; B is well-specified already and just needs building.

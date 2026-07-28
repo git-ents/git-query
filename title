@@ -1,0 +1,1 @@
+Output has no ordering contract, no column headers, and no machine-readable format, while the tests sort before asserting
