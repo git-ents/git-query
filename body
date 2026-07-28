@@ -1,0 +1,34 @@
+**What**
+The vocabulary-discovery command prints thirteen lines of `name/arity` plus a doc string. It does not print the mode vectors, does not print argument types, and does not list builtins at all -- so the `git-anchor` projection builtins, the distinctive part of the fact vocabulary, cannot be found from the CLI.
+
+**Where**
+- `crates/git-query/src/main.rs:230-236` -- `print_predicates` iterates `registry.predicates()` and prints `{name}/{arity}\t{doc}`.
+- `crates/gix-query-ir/src/registry.rs:462` -- `Registry::builtins()` exists and is never called by the binary.
+- `crates/gix-query-ir/src/registry.rs:688-698` -- `bind/7` and `bind_fuzzy/7`, with `gate_safe: true` and `gate_safe: false` respectively, plus doc strings that are exactly what a user needs.
+- `crates/gix-query-ir/src/registry.rs:711-731` -- the six comparison builtins, likewise invisible.
+- `crates/gix-query-ir/src/registry.rs:38` -- `ValueType::as_str` is documented as "The type name **as `git query predicates` prints it**". It does not print it.
+- `docs/query-and-rules.adoc:439` -- "`git query predicates` lists callable predicates, host and repo, **with signatures and modes**."
+
+Actual output:
+
+```
+$ git query predicates
+anchor/1	an immutable identity whose location is derived
+commit/1	the revision names a commit
+...
+```
+
+Everything a user needs to write a correct query -- which arguments must be bound, what type each column is, whether a builtin is gate-safe -- is present in the registry and printed nowhere.
+
+**Why it matters**
+This is the largest cheap win in the repository. The mode error tells users to run this command (`crates/gix-query-check/src/error.rs:396`); the command answers nothing. Someone learning the tool has to read `registry.rs` to find out that `commit` needs its argument bound, that `bind` exists, or that `bind_fuzzy` is not allowed in gates.
+
+For a conference it matters more than usual, because "how do I find out what I can ask" is the first question after "what is this". A single well-formatted screen of `commit(+rev)`, `parent(+rev, -rev)`, `bind(+oid, +rev, -oid, -int, -int, -position, -content) [gate-safe]` does more to make the language feel real than any prose.
+
+**Options**
+- Option A -- print the full signature: name, mode vector rendered as `+`/`-` against typed argument names, the doc line, and a `not gate-safe` marker. Add a `--builtins` section or just interleave with a class column. Perhaps two hours of work; every input is already in `PredicateEntry` and `BuiltinEntry`.
+- Option B -- A, plus `git query predicates <name>` for a single detailed entry with an example invocation. The example is the part that teaches -- a user who sees `git query run parent --bind 0=<rev>` printed next to `parent(+rev, -rev)` does not need the mode concept explained.
+- Option C -- A or B, plus generate the reference table in `docs/query-and-rules.adoc` from the same registry, so the doc and the CLI cannot drift.
+
+**Recommendation**
+B, and do it before anything else on this list -- it is the cheapest thing here with the largest visible effect, and it repairs the mode error cross-reference as a side effect. High confidence.

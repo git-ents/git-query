@@ -1,0 +1,1 @@
+git query predicates omits modes, types, and every builtin, so bind and bind_fuzzy are undiscoverable
