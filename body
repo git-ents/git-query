@@ -1,0 +1,24 @@
+**What**
+The README leads with a safety argument built on exit code 3 -- truncation at a cap, which a gate must treat as failure. There is no cap and no exit 3 anywhere in the code. `DEVPLAN.md` already knows this and says so; the two user-facing documents do not.
+
+**Where**
+- `README.md:23` -- "Exit codes follow grep: 0 rows, 1 none, 2 error -- plus 3 for truncation at a cap"
+- `docs/query-and-rules.adoc:463-465` (normative) -- "Truncation at any cap is announced by a distinct exit status. Exit codes: 0 rows, 1 no rows, 2 error, 3 truncation."
+- `crates/git-query/src/main.rs:95-104` -- `main` returns only 0, 1, 2. No third arm.
+- `DEVPLAN.md:803` -- "Truncation is not expressible... Exit code 3 therefore has no producer."
+- `DEVPLAN.md:1050` -- "Do not fake exit 3... Keep the code reserved and documented as reserved."
+
+The replacement the DEVPLAN specifies -- an admission-time refusal that counts the EDB, projects the cost, and declines to start -- does not exist either. `crates/gix-query-eval/src/demand.rs:112-121` enumerates every all-free EDB predicate in `rewritten.eager` in full, into an in-memory CSV string, with no count, no projection, and no ceiling.
+
+**Why it matters**
+This is the single most quotable paragraph in the README and the one a security-minded audience member will remember. It is also the one most likely to be checked: `git query run ... ; echo $?` is a two-second live disproof. Worse, someone who reads the normative spec and writes a gate around `[ $? -eq 3 ]` has written a branch that never fires, which is exactly the false confidence the paragraph exists to prevent.
+
+The unbounded eager load is the same hole from the other side. The README argues that mode discipline converts an unaffordable query into a compile error, but an EDB predicate that legitimately offers an all-free vector is materialized whole with no ceiling, so the affordability argument holds for rules and not for the base relations they read.
+
+**Options**
+- Option A -- implement the admission-time refusal the DEVPLAN specifies: before round 1, count each eager relation, refuse above a configurable ceiling with exit 2 and a message naming the relation and the count. Cheap, honest, matches the plan. Costs a ref-count pass per eager relation.
+- Option B -- implement a real post-hoc cap with a genuine exit 3, propagating a truncation flag up through derived relations. Faithful to the README but requires a truncation bit in `LoopResult` that survives every join, and Nemo cannot supply it, so every derived relation downstream of a truncated one has to be conservatively marked. Substantial work.
+- Option C -- correct the README and the spec to describe the refusal, reserve 3, and put the reasoning on the slide as a design argument rather than a shipped feature.
+
+**Recommendation**
+A plus C, before the talk. The reasoning about why a truncated relation has no safe reading is genuinely good and deserves the slide; make the slide say "so we refuse to start" rather than "so we exit 3". Then ship the admission check so the refusal is real. High confidence -- this is a claim the code contradicts, not a judgement call.
