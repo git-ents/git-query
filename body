@@ -1,0 +1,35 @@
+**What**
+`ParseError` and `CheckError` both carry spans on every variant, deliberately separated from the message text. No consumer maps a span to a line and column. Errors reach the user as bare sentences with no location at all -- not even a line number, and not even the name of the file that failed.
+
+**Where**
+- `crates/gix-query-parse/src/error.rs:6-10` -- "Message text never repeats the span; a caller already has it as a field and **maps it to a line and column however its output format wants**."
+- `crates/gix-query-parse/src/error.rs:99-110` -- `ParseError::span()` exists for exactly this.
+- `crates/gix-query-check/src/error.rs:389-407` and throughout -- every `CheckError` variant carries `span: Span`.
+- `crates/gix-query-rules/src/error.rs:33-39` -- `join` maps errors through `ToString` and concatenates with newlines. The span is dropped here.
+- `crates/gix-query/src/lib.rs:19-25` -- an identical `join`, dropping spans again.
+- `crates/git-query/src/main.rs:100-102` -- `eprintln!("error: {err}")`.
+
+What a user sees for a missing terminator in a nine-line module:
+
+```
+$ git query rules add pe pe.dl
+error: module "pe" failed to parse:
+expected ., found p
+```
+
+No path, no line, no column, no source excerpt. For a validation failure the user gets a rule id (`in rule r0`) which is an index into the assembled whole program, not into their file.
+
+**Why it matters**
+Nine validation passes, a resynchronizing parser that collects multiple errors so one run reports everything (`crates/gix-query-parse/src/error.rs:113-119`), a `Pass` enum built so that "every reject fixture names the pass that fired" -- an unusual amount of care has gone into *producing* good diagnostics, and none of it survives the last three feet to the terminal. With this many passes, error quality is a large fraction of what the product is.
+
+The rule-id problem compounds it. `r0` is a `RuleId` into the flattened `Program`, assigned in module-iteration order across every published module (`crates/gix-query-ir/src/rule.rs:207-213`). Adding an unrelated module renumbers it. The one piece of location information that does reach the user is the one that is not stable.
+
+For the talk: a live-authored rule with a typo produces an error that cannot be acted on without counting characters. That is a bad thirty seconds, and it is entirely avoidable given that the data is already computed.
+
+**Options**
+- Option A -- a `render(source, path, errors) -> String` in `gix-query-parse` that maps byte spans to line/column and emits `path:line:col: message` plus the source line and a caret. Standard, self-contained, no new dependency. Thread the source text through `assemble` so check errors get the same treatment.
+- Option B -- adopt `annotate-snippets` or `ariadne` for multi-span rendering with labels. Prettier and better for errors that want to point at two places at once -- a negation cycle genuinely wants to point at both rules -- but it is a new dependency and the `.rules` file says to ask before adding one.
+- Option C -- A, plus replace `rule r0` in `CheckError` messages with `module:line`. The `Rule` already carries a `span` (`crates/gix-query-ir/src/rule.rs:80`) and `Program::rule_module` already knows the module (`rule.rs:246-250`), so the mapping exists; what is missing is carrying each module source text alongside the assembled program so the span can be resolved.
+
+**Recommendation**
+A and C. C is the one that matters more than it looks: an unstable rule index is worse than no location, because it invites the user to trust it. B is a reasonable upgrade later. High confidence -- the infrastructure is built and the last step is missing.

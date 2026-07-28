@@ -1,0 +1,1 @@
+Every diagnostic computes a span and every renderer throws it away: no line, no column, no caret
