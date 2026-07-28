@@ -1,0 +1,30 @@
+**What**
+The workspace requires an exact nightly toolchain and a git dependency on an unpublished crate, which together mean the tool cannot be `cargo install`ed, cannot be published, and cannot be built without network access to two hosts. There is no vendored copy and no documented offline path.
+
+**Where**
+- `rust-toolchain.toml` -- `channel = "nightly-2026-07-23"`, pinned to an exact date.
+- `crates/gix-query-eval/Cargo.toml:17-18` -- `nemo` and `nemo-physical` from `git+https://github.com/knowsys/nemo?rev=4415bc2e...`
+- `Cargo.lock` -- 484 package entries.
+- `DEVPLAN.md:813-816` -- "Nothing in the dependency chain can be published to crates.io. Publication of `nemo` stopped at a yanked `0.2.1`... `gix-query` and `git-query` are therefore installed from source until Nemo publishes."
+- `DEVPLAN.md:816` -- "230 transitive crates, including an HTTP client, an LSP implementation, and an RDF/SPARQL stack, none of it reachable from anything we do." The lockfile is now at 484 entries; `tower-lsp`, `ascent`, and a tokio stack all compile as part of a plain `cargo build`.
+- No `.cargo/config.toml`, no `vendor/`, no `[patch]` section.
+
+**Positive finding, and I want it on the record:** `cargo build --offline` succeeded in 1m44s on a warm registry cache. The build is not broken and the pin is not rotten. This issue is about the failure modes around that, not about a current failure.
+
+**Why it matters**
+Two audiences, two different costs.
+
+**Adoption.** `cargo install git-query` does not work and will not until upstream publishes, which is not in this project control. The DEVPLAN states this plainly, and it is the correct call given what Nemo buys -- correct stratified evaluation on the first attempt is genuinely hard to write. But it means every user builds from source on a specific nightly, and "install a pinned nightly and clone two repositories" is where most people stop. For a project being presented as something to use, that is the largest single barrier, larger than anything in the language.
+
+**Demo.** The brief question is the right one: what happens if this does not build on the morning of the talk? The current answer is a cargo registry cache and hope. A pinned nightly can vanish from the mirror; a git rev cannot vanish from GitHub but GitHub can be unreachable; the 484-entry graph includes crates that could yank. None of these is likely on any given day. All of them are cheap to insure against and none is insured against today.
+
+There is also a smaller point worth naming: the transitive graph contains an LSP implementation and an RDF stack that nothing in this project reaches, which is a supply-chain surface with no corresponding benefit. That is not fixable here, but it is an honest cost to state alongside the trade rather than only in the DEVPLAN.
+
+**Options**
+- Option A -- `cargo vendor` into the repository, or at minimum onto the demo machine, with `.cargo/config.toml` pointing at it. Turns the build into a purely local operation with no network and no toolchain download. A few hundred megabytes, ugly in a repository, and completely effective. If it is only on the demo machine it costs nothing in the repository at all.
+- Option B -- commit a prebuilt binary or a container image for the demo, and rehearse from it. Removes the build from the critical path entirely. Says nothing about adoption.
+- Option C -- make the Nemo dependency optional behind a feature, with a naive semi-naive evaluator as the default. `rust-toolchain.toml` argues against this explicitly and well -- "a split build is a second way to do things and it would be the way that silently stops being tested." I agree with that reasoning and mention the option only to note it was considered and rejected on record.
+- Option D -- state the cost in the README rather than only in the DEVPLAN. The README currently says the trade costs "a nightly toolchain and a git dependency"; it does not say the tool cannot be installed from crates.io. A reader who wants to try it should learn that from the README, not from attempting it.
+
+**Recommendation**
+A on the demo machine plus B as a backup, both before the talk -- together they are perhaps an hour and they remove the only failure mode on this list that can end a presentation. D in the README. Not C; the DEVPLAN reasoning against a split build is sound. High confidence on A and B as insurance, and I want to repeat that the build currently works, so this is contingency planning rather than a defect.
