@@ -1,0 +1,27 @@
+**What**
+"Policy as repository data" pays off in a working gate. There is no gate. The library crate the README credits with the footprint and acyclicity export contains neither, the pre-receive validation the spec assumes has no artifact, and the CI workflows do not use the tool.
+
+**Where**
+- `README.md:56` -- "`gix-query` | the library surface, **plus the footprint and acyclicity export**"
+- `crates/gix-query/src/lib.rs` -- 163 lines: `checked_program`, `run_goal`, `run_predicate`, `QueryError`. A grep for `footprint` or `acyclic` in `crates/gix-query/src/` returns nothing.
+- `DEVPLAN.md` Phase 4, agent `effects` -- "footprint export in `gix-query`. Public API returning a goal transitive base-predicate footprint and the acyclicity verdict over a set of effect declarations."
+- `crates/gix-query-check/src/pass7_footprint.rs:41` -- `compute` produces the footprints, `CheckedProgram::footprints` holds them, and no public path reaches them.
+- `crates/gix-query-check/src/pass7_footprint.rs:19-26` -- names the four consumers of the footprint (cache key, effect-graph acyclicity, the `bind_fuzzy`-in-gates prohibition, the ambiguity lint) and correctly explains why they belong upstream in `gix-query-rules` or `gix-query`. None of the four exists in either.
+- `crates/gix-query-ir/src/registry.rs:697-708` -- `bind_fuzzy` is marked `gate_safe: false`; `Footprint::is_gate_safe` is tested at `pass7_footprint.rs:157`. Nothing calls it outside that test.
+- `docs/query-and-rules.adoc:281` -- "Validation is whole-program, at pre-receive". No hook script ships.
+- `.github/workflows/CI.yml` -- builds and tests the project; does not gate on it.
+
+**Why it matters**
+The whole argument for putting policy in refs instead of in a hook is that it becomes reviewable data with history. That argument only lands if there is something at the other end enforcing it. Right now the tool answers questions and nothing acts on the answers.
+
+The `bind_fuzzy` case makes this sharp. The design correctly identifies that a projection falling back to a context search is not gate-safe -- its answer depends on whether garbage collection has run (`DEVPLAN.md:255-262`) -- and it builds the whole machinery to detect a wrapped call to it transitively (`pass7_footprint.rs:1-10`, with a test proving a one-line wrapper does not defeat it). Then nothing consults the verdict. A rule module can reach `bind_fuzzy` through a wrapper today and no code path objects.
+
+For the conference this is the difference between "here is an interesting query language" and "here is how your merges get gated". The second is the talk people remember. A twenty-line pre-receive script in the README that runs a named policy predicate and refuses on a non-zero exit is a bigger win than any remaining language feature.
+
+**Options**
+- Option A -- ship the copy-pasteable artifacts: a `pre-receive` script and a GitHub Actions step in the README, both running `git query run <policy> --bind ...` and branching on the exit code. Needs the revspec issue fixed first, and it is honest about the failure mode. Perhaps half a day including testing it against a bare repo.
+- Option B -- implement the footprint and gate-safety export in `gix-query` and enforce it: `rules add` and `rules check` refuse a module whose exported predicates reach a non-gate-safe builtin, or at minimum warn. Every input exists; this is wiring. It also makes the README credit true.
+- Option C -- both, plus a `git query gate <predicate>` verb that bundles the exit-code convention, the gate-safety check, and the provenance record into one command a hook can call. That is the shape the CI story wants -- a hook author should not have to compose four flags correctly to get fail-closed behavior.
+
+**Recommendation**
+A before the talk, because the demo value is disproportionate to the effort. B soon after, because a gate-safety check that is computed and ignored is worse than one that does not exist -- it reads as enforcement in the code and is not. C is the right long-term shape and I hold that view with moderate confidence; it could equally be argued that `run` plus documented exit codes is sufficient and a second verb is ceremony.
