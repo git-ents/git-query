@@ -1,0 +1,27 @@
+**What**
+The spec defines three query tiers and eight flags on `run`. The CLI implements tiers 1 and 3 and four flags, none of which are the spec ones. Tier 2 -- the subject-plus-filters form that the spec argues is the ergonomic centre of the CLI -- is fully implemented in `gix-query-parse` and never called.
+
+**Where**
+- `crates/gix-query-parse/src/desugar.rs:57-82` -- `goal_from_subject(subject, positive, negative)`, with a careful argument that placing negated literals after all positive ones makes `--without` safe by construction. No caller outside tests.
+- `crates/git-query/src/main.rs:22-56` -- `run` accepts `predicate`, `--bind`, `--goal`, `--select`, `--repo`.
+- `docs/query-and-rules.adoc:441` -- "Flags on `run`: `--rev` (default `HEAD`), `--in A..B`, `--edb name=file`, `--format table|tsv|json`, `--order`, `--abbrev[=<n>]`."
+- `docs/query-and-rules.adoc:404-406` -- the spec tier-1 and tier-2 examples are `git query run approved-by --signer joey` and `git query run blob --with unreviewed --without approved-by:joey --in main..HEAD`. Neither parses today.
+- `crates/gix-query-ir/src/registry.rs:161-163` -- `Backing::AdHoc` documented as "Facts came from `--edb name=file` for this run". No such flag.
+- `README.md:9,12` -- `git query run unreviewed --rev HEAD` and `git query run blob --with unreviewed --in main..HEAD`.
+
+The shipped tier-1 surface is positional binding: `--bind 0=<value>`, "Positions are 0-indexed into the predicate declared signature". The spec named surface is `--signer joey`.
+
+**Why it matters**
+`--bind 0=abc123` requires the user to know the argument order of a predicate whose signature the CLI will not print (see the `predicates` issue). It is the least learnable form of the three and it is the only one that ships. Meanwhile `--with`/`--without`/`--in`, which read almost like English and carry a genuinely interesting safety argument about where negation may compose, exist as a function nobody calls.
+
+For the talk specifically: the README demo line `git query run blob --with unreviewed --in main..HEAD` is the one that makes a non-Datalog audience nod. It is also the one furthest from working.
+
+There is a design question buried here beyond the missing wiring. `--bind <position>=<value>` versus `--<argname> <value>` is a real fork. Positional binding is uniform and needs no naming scheme; named binding is self-documenting and survives a signature gaining an argument. The spec chose named. The code chose positional. Nothing records that the choice was revisited.
+
+**Options**
+- Option A -- wire tier 2 and `--rev`/`--in`. `goal_from_subject` is written and the ambient-flag filling is described at `docs/query-and-rules.adoc:434-436`. This gets the README demo line working and is the highest-value piece.
+- Option B -- switch tier 1 to named arguments per the spec, deriving names from the registry signature. Requires argument names in `PredicateEntry`, which it does not currently carry -- only types. That is the real cost, and it is also what `predicates` needs in order to print a useful signature, so the two pay for each other.
+- Option C -- add `--format json|tsv` and `--order` from the spec flag list. Small, and it is what makes the tool scriptable in a gate.
+
+**Recommendation**
+A first, then B and C together since they share the argument-names dependency. If only one thing gets done, wire tier 2 -- it is already written, and it is the surface the README sells. High confidence on A; B is a genuine judgement call and positional binding is a defensible answer if it is written down as one.
