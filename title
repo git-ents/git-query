@@ -1,0 +1,1 @@
+A stored rule module records only its source text: no language version, no declared dependencies, no way to tell a stale module from a broken one

@@ -1,0 +1,36 @@
+**What**
+`RuleModuleRecord` has one field. Storing source text rather than serialized IR is the right call and I want to say so plainly -- it is diffable, reviewable, and it makes the "policy as repository data with an audit trail" pitch literally true. The consequence the design has not addressed is that a stored module is re-parsed and re-validated against *today* grammar and *today* registry on every read, with nothing recorded about what it was written against.
+
+**Where**
+- `crates/gix-query-rules/src/store.rs:18-27`:
+
+```rust
+#[derive(Facet)]
+struct RuleModuleRecord {
+    source: String,
+}
+```
+- `crates/gix-query-rules/src/assemble.rs:26-40` -- every read re-parses and re-checks the union of every module.
+- `crates/gix-query-parse/src/parser.rs:24` -- "a `.dl` file never declares its own module". There is no header, no version pragma, no import list; a module name comes from the ref path.
+- `crates/gix-query-rules/src/assemble.rs:44-79` -- `qualify` decides that any unqualified, unregistered name belongs to this module. A cross-module reference is written qualified (`review.reviewed`) and declares no dependency.
+- No grammar production for an import or a version constraint (`crates/gix-query-parse/src/token.rs` has no such keyword).
+
+Verified the good part: `git show refs/meta/rules/review` produces a real unified diff of the `.dl` text. That works exactly as advertised.
+
+**Why it matters**
+Three gaps follow from the empty record.
+
+**Versioning.** The brief question -- "a rule that validated last week may not validate today" -- is live. If the grammar gains a keyword, a reserved prefix, or a stricter pass, previously-valid modules start failing at *read* time, which per the wedging issue means every query in the repository fails. There is no version field to gate on, no way to say "this module targets language v1", and no migration path other than editing every affected repository. For a tool whose thesis is that this data outlives the code that reads it, that is the wrong default.
+
+**Dependencies.** Module `a` can reference `review.reviewed` with nothing recorded anywhere that `a` depends on `review`. Deleting `review` breaks `a` at query time with an unresolved-predicate error naming a predicate, not a missing module. There is no dependency graph to inspect, no `rules api` (specified at `docs/query-and-rules.adoc:290` and not built), and no way to know what a module publishes before loading it alongside everything else.
+
+**The middle option.** The record doc says storing IR "would only be a second thing to keep in sync". That is right about *storing* it and skips the third option: source as the sole truth, plus a validated-IR cache keyed by the module blob oid, held outside the ref namespace. It is not a second source, it cannot drift (a content hash mismatch means recompute), and it removes the re-parse-and-recheck cost from every query. Whether that cost matters is an open question -- nobody has measured whole-program assembly against a realistic module count.
+
+**Options**
+- Option A -- add a `language_version: u32` to `RuleModuleRecord` and refuse, with a clear message, a module written for a version this build does not support. Costs one field and a schema bump; `gix-store` already versions the schema ref (`refs/schema/rules`), so the mechanism is present. This is the one I would not skip.
+- Option B -- add explicit imports: `use review.` at the top of a module, checked against the published set, so the dependency graph is data. Makes deletion and renaming safe and gives `rules api` something to diff against. Costs a grammar production and a resolution pass.
+- Option C -- add the content-hash-keyed IR cache. Only worth it if assembly cost is measured and found to matter.
+- Option D -- do nothing and accept that the language is frozen by `docs/query-and-rules.adoc`. Coherent if the grammar genuinely never changes, but "the spec freezes it" is a claim about intent, not a mechanism.
+
+**Recommendation**
+A, and treat it as cheap insurance -- the field costs nothing now and is unaddable later without a migration. B when there is a second real module. C only after measurement. High confidence on A; B is a genuine judgement call, since qualified names without imports is a defensible small-scale choice and imports are ceremony until there are enough modules to justify them.
