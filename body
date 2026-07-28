@@ -1,0 +1,28 @@
+**What**
+Two separate problems with one subject. The cache key is credited to `gix-query-rules` in the README and in the crate own module doc, and there is no implementation of it anywhere in the workspace. Separately, the key the normative spec designs is missing an input that the project own upgrade procedure says is semantics-bearing.
+
+**Where**
+Nothing implements it:
+- `README.md:54` -- "`gix-query-rules` | rule-module storage, whole-program assembly, the cache key"
+- `crates/gix-query-rules/src/lib.rs:1` -- "Rule-module storage, whole-program assembly, and the cache key."
+- `crates/gix-query-rules/src/` contains `assemble.rs`, `error.rs`, `store.rs`. No key, no digest, no hasher.
+- A workspace grep for `cache_key`, `CacheKey`, `footprint_digest`, `edb_digest` returns only doc comments explaining what the key would need. The one real artifact is `crates/gix-query-ir/src/registry.rs:475` `builtin_digest_input`, which has no consumer.
+
+The specified key is incomplete:
+- `docs/query-and-rules.adoc:466-476` -- `key = H(rules snapshot OID, canonical goal, footprint digest, builtin registry digest, edb digest)`
+- `DEVPLAN.md:825` -- "A Nemo version bump is a semantics change, not a dependabot patch."
+
+The Nemo pin appears in neither the key nor the digest inputs. Nemo computes the fixpoint; if a bump can change semantics, a bump can change a cached answer with every listed input unchanged. The `builtin registry digest` covers builtin implementation versions only (`registry.rs:466-486`), not the evaluator, not the rewrite, not the check passes.
+
+**Why it matters**
+For the code: the second half of the README central claim -- "the same declaration is what makes the answer cacheable" -- has no artifact behind it. Modes are load-bearing for safety, demonstrably. They are load-bearing for caching only in the design document. If someone asks "show me the cache" during Q and A there is nothing to show.
+
+For the spec: this is the exact failure the spec itself warns about two paragraphs later -- "a cache over a pure function is only as sound as the purity claim, and pure has to mean pure with respect to the implementation as well as the inputs." The reasoning is applied to `gix-anchor` projection heuristics and not to the engine that computes every answer. A gate that caches across a Nemo bump gets a stale verdict, which the spec calls the worst place for one.
+
+**Options**
+- Option A -- ship nothing, and change the README and `lib.rs` to say "whole-program assembly" only, deferring the key. Honest, zero risk, and removes an unbacked claim before the talk.
+- Option B -- ship the key. The pieces exist: `Footprint` with `ref_globs` from pass 7, `canonical.rs` for the goal, `builtin_digest_input` for the builtins. What is missing is resolving the globs against the repo, the EDB digest, and a store for entries. A day or two, and it makes the modes-are-affordability claim concrete on stage.
+- Option C -- either of the above, plus add a single `ENGINE_VERSION` input to the specified key, derived from the pinned Nemo rev and the `gix-query-eval` version, so a pin bump invalidates everything. Cheap and closes the hole by construction rather than by discipline.
+
+**Recommendation**
+C over A for the conference; C over B if there is time. The spec correction costs one line and removes a soundness hole that the project own reasoning already condemns in a neighbouring case. Whether to build the cache before the talk is a genuine judgement call about where the remaining hours go -- I lean towards not building it and correcting the claim instead, because a cache with a demonstrably complete key is a better slide than a cache that exists.
