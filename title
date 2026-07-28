@@ -1,0 +1,1 @@
+Every demand round re-parses the program and re-serializes the whole fact set to CSV from cold, and explain pays for a third full run

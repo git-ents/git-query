@@ -1,0 +1,27 @@
+**What**
+The demand loop calls `engine::run` once per round. Each call rebuilds the entire Nemo program text, re-serializes every fact table to a CSV string, constructs a fresh tokio current-thread runtime, re-parses the program, and evaluates from scratch. A k-round query pays k times for work that is identical across k-1 of those rounds. `explain` then runs the whole thing again.
+
+**Where**
+- `crates/gix-query-eval/src/demand.rs:130` -- `let mut engine = engine::run(program, &tables)?;` inside `for round in 1..=max_rounds`
+- `crates/gix-query-eval/src/engine.rs:50-73` -- program text and CSV rebuilt per call; `csv_of` re-serializes *all* rows, not the delta
+- `crates/gix-query-eval/src/engine.rs:243-249` -- `block_on` builds a new runtime per call
+- `crates/gix-query-eval/src/engine.rs:41-45` -- the cost is acknowledged: "Every round of the demand loop calls this from cold: Nemo has no incremental entry point, so a k-round query pays k times."
+- `crates/gix-query-eval/src/engine.rs:214-217` -- `trace_fact` calls `run` again
+- `crates/gix-query/src/lib.rs:157` -- `max_rounds` is hardcoded to `64`
+
+**Why it matters**
+The tables grow monotonically across rounds, so round k re-serializes everything rounds 1..k-1 already serialized. That is quadratic in total bytes written against round count, on top of re-parsing. The spike measured the parse path at roughly 109 KB/s (`DEVPLAN.md:809-812`) and that is why facts go through CSV rather than program text -- but the *program* still goes through the parser every round, and the CSV is regenerated whole.
+
+For a demo repository this is invisible. For a policy over a real history with a deep demand chain -- which is the use case the project exists for, and the one a "does this scale" question will target -- it is the dominant cost, and it is entirely on this side of the boundary. The DEVPLAN calls incrementality out of scope (`DEVPLAN.md:836-838`), which is fair, but "reuse the CSV we already built" is not incrementality, it is not throwing work away.
+
+Two related constraints worth naming in the same breath, since they share the root cause of "Nemo owns the process":
+- `execute()` enters a process-global timing mutex, so one evaluation per process, ever (`engine.rs:5-8`, `DEVPLAN.md:817-820`). Any embedding -- a CI runner, a server, a forge -- gets a hard serialization point that no type expresses.
+- `max_rounds` at 64 is a magic literal in the facade with no way to raise it and, on exhaustion, a `DemandDidNotConverge` error rather than a diagnosis of which demand relation kept growing.
+
+**Options**
+- Option A -- cache the CSV per relation and append only new rows between rounds; cache the program text once outside the loop, since the comment at `demand.rs:99-103` already establishes the rule text never changes between rounds. Removes the quadratic term for a modest amount of bookkeeping.
+- Option B -- A, plus hoist the tokio runtime out of `block_on` into a value the loop owns. The comment at `engine.rs:236-242` argues against holding one across rounds because the global mutex already serializes; that is true but it is an argument about concurrency, not about construction cost.
+- Option C -- measure first. There is a conformance suite and a spike report but no benchmark of the loop itself against round count. Without one, this is reasoning about a cost nobody has weighed.
+
+**Recommendation**
+C, then A. I am confident the quadratic serialization is real from reading the code, and much less confident it matters at the sizes this tool will actually see -- which is exactly why the benchmark comes first. Also expose `max_rounds` and make its exhaustion error name the demand relation that was still growing; that turns an opaque failure into a debuggable one.
