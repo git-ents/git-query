@@ -1,0 +1,23 @@
+**What**
+The README central architectural sentence describes a fixpoint engine "reached through a seam", with everything distinctive sitting above it. The DEVPLAN rejects exactly that framing in writing. The code matches the DEVPLAN: `gix-query-eval` names Nemo concretely, and the interface it uses is stringly-typed.
+
+**Where**
+- `README.md:28` -- "evaluated by a fixpoint engine reached through a seam"; `README.md:52` -- "`gix-query-ir` ... the traits the engine reaches the world through -- **the frozen seam**"
+- `DEVPLAN.md:18` -- "the engine is Nemo, it is the only one, and `gix-query-eval` calls it by name **rather than through a seam anticipating a second**"
+- `DEVPLAN.md:747-752` -- "An earlier draft of this section put two engines behind a trait and shipped the one we wrote. That is rejected... There is one engine, it is Nemo, it is named concretely."
+- `crates/gix-query-eval/src/engine.rs:50-88` -- `run` builds a `String` of `@import` directives, serializes every fact table to CSV text, appends `program.to_string()`, and hands the lot to `RuleFile::new`. There is no trait.
+
+**Why it matters**
+Both statements are individually defensible, and the DEVPLAN reasoning is the better one -- "extract the seam when there is something to put behind it" is correct engineering. The problem is that the README says the opposite, and the README is the conference artifact.
+
+Concretely: an audience member who has read the README asks "can you swap the engine?" or "show me the seam". The honest answer is that the seam in `gix-query-ir` is a *world*-facing seam -- `FactSource` and `Builtin` (`crates/gix-query-ir/src/host.rs:82-121`), which let the evaluator be tested with no repository at all, and that is a genuinely strong structural decision worth a slide of its own. But it is not an engine seam, and the README sentence invites the reader to think it is. Answering "actually the seam is the other direction, and we deliberately have no engine seam" mid-question is a worse moment than answering it from a slide.
+
+There is also a real substantive point underneath. The Nemo boundary being program text plus CSV -- rather than any typed interface -- means the boundary is wide, untyped, and re-crossed from cold on every demand round. The `NemoProgram`/`NemoTables` type split (a §2.11 obligation, correctly implemented) is what keeps facts out of program text, and it is the closest thing to a seam that exists. If a seam is ever extracted, that pair is where it lives.
+
+**Options**
+- Option A -- reword the README to match the DEVPLAN: the seam is `FactSource` and `Builtin`, it faces the repository, and its payoff is that the evaluator has no git dependency and is property-testable over synthetic facts. Say separately that the engine is Nemo, named concretely, one implementation, on purpose. Costs two sentences and turns a wobble into a position.
+- Option B -- keep the wording and back it: extract a `Fixpoint` trait over `(RewrittenProgram, tables) -> relations` with Nemo as one implementation and a naive semi-naive evaluator as the other. The DEVPLAN argues against this at length and I think it is right, but it would de-risk the nightly dependency.
+- Option C -- A, plus promote the `ascent`-versus-interpreted differential (`crates/gix-query-kernel/tests/differential.rs:322`) as the evidence that the frontend is engine-independent. It already runs both a compiled Datalog and Nemo over identical random EDBs and asserts agreement. That is stronger than what the README currently claims.
+
+**Recommendation**
+A and C. The DEVPLAN position is correct and the README should adopt it rather than hedging towards a seam that was deliberately not built. Medium-high confidence -- reasonable people could argue for B, but the DEVPLAN argument against maintaining two engines is sound.
