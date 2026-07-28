@@ -1,0 +1,1 @@
+No trust root for refs/meta/rules/*: the kernel that would supply one is an orphan crate with no dependents and no hook

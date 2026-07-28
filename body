@@ -1,0 +1,24 @@
+**What**
+Rules live in the repository being policed. `gix-query-kernel` exists precisely to break that circularity -- frozen, compiled denial rules governing who may push a rule ref, requiring signature verification. Nothing in the workspace depends on it, nothing calls `gate`, and no hook ships. Anyone who can push can rewrite the policy and then pass it.
+
+**Where**
+- `crates/gix-query-kernel/src/lib.rs:1-8` -- "the rules deciding whether a rule ref may move cannot themselves be a rule ref, so they are compiled in, frozen".
+- `crates/gix-query-kernel/Cargo.toml` -- `[dependencies] ascent`. Its `gix-query-*` deps are all `[dev-dependencies]`. A workspace grep for `gix_query_kernel` outside the crate itself returns nothing.
+- `crates/gix-query-kernel/src/lib.rs:46-48` -- `pub type Oid = String; ... any Clone + Eq + Hash type works once this is wired to a real extractor`. The extractor does not exist.
+- `docs/query-and-rules.adoc:281` -- "Validation is whole-program, **at pre-receive**". There is no pre-receive artifact in the repository.
+- `crates/gix-query-rules/src/store.rs:56-63` -- `put` writes the ref with no signature check, no allowlist, and no consultation of anything.
+
+**Why it matters**
+This is the hostile audience question, and I think it is *the* one: "your policy is repository data, and the repository is what the policy governs -- so what stops me from pushing a rule that approves my own commit?" Today the honest answer is "nothing in this repository; you are expected to configure your forge". That answer is much weaker than the one the design actually has, which is the kernel.
+
+The gap between having the answer and being able to demonstrate it is the whole problem. The kernel is a well-argued, well-ported artifact -- the three changes documented at `lib.rs:24-36` are genuinely thoughtful, and the differential oracle at `crates/gix-query-kernel/tests/differential.rs` is real work. It is also, right now, a library that compiles and is never called, which is indistinguishable from a design sketch.
+
+Secondarily, the differential oracle is undersold. `README.md:34` says the Nemo seam has one implementation; `DEVPLAN.md:747-752` explicitly rejects a second engine behind a trait. But `differential.rs:322` runs proptest-generated EDBs through both the compiled `ascent` kernel and the interpreted Nemo path and asserts relation-for-relation agreement. That *is* a second implementation validating the frontend, and it is better evidence than the README claims for itself.
+
+**Options**
+- Option A -- ship a `git query gate` subcommand and a copy-pasteable pre-receive hook that reads a proposed ref transaction, extracts facts, runs `gix_query_kernel::gate`, and refuses on any non-empty denial relation. Makes the circularity answer demonstrable in thirty seconds. The extractor (signature verification, ancestry bounded at old tips) is the real work here and is not trivial.
+- Option B -- ship less: an allowlist of signing keys in a config or a `refs/meta/rules-trust` ref, checked by `RuleStore::put` and by assembly. Weaker than the kernel, much cheaper, and it makes the answer "there is a trust root" rather than "there is a plan for one".
+- Option C -- document the boundary explicitly: state in the README that `git-query` assumes an external trust root over `refs/meta/rules/*`, name the kernel as the intended one, and say it is not wired. Costs nothing and converts an ambush into a prepared answer.
+
+**Recommendation**
+C before the talk, unconditionally -- an unprepared answer to this question is the worst outcome available. A after, because the kernel is close and it is the intellectually satisfying answer. Also fix the README to credit the differential oracle as validating the seam, since it already does. High confidence on C, medium on the A-versus-B ordering.
