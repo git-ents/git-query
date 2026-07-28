@@ -1,0 +1,27 @@
+**What**
+Body literals are evaluated in the order they are written, and that order fixes the sideways-information-passing strategy. The design consequence is that the author *is* the query planner. Nothing in the tool tells the author what plan they wrote, what it costs, or that swapping two literals would change it by orders of magnitude.
+
+**Where**
+- `crates/gix-query-ir/src/rule.rs:64-72` -- "A body is evaluated in *author order*. That is a language decision, not an engine one... it supplies the sideways-information-passing strategy the magic-set rewrite needs, so no planner has to invent one."
+- `crates/gix-query-ir/src/mode.rs:240-247` -- "The adornment of every literal is *uniquely determined* by the source text, because body literals are evaluated in author order."
+- `crates/gix-query-eval/src/rewrite.rs:283-295` -- `visit_literal` walks the body left to right, accumulating the bound prefix.
+- `crates/git-query/src/main.rs:22-56` -- no `--plan`, no `--explain-plan`, no `--dry-run`, no verbosity flag.
+- `crates/gix-query-eval/src/demand.rs:52-59` -- `CallLog` records every host call with its round, mode, bindings, and answer count. It is built on every run and nothing prints it.
+
+**Why it matters**
+This is the strongest opportunity in the repository and I think it is genuinely underexploited rather than merely unfinished.
+
+"You control the plan by writing the literals in order" is an unusual and honest design position -- it trades a planner for predictability, and the derivation trees stay isomorphic to the source text as a bonus. But a plan you control and cannot see is a foot-gun. Two rules that differ only in literal order can differ by a factor of a thousand, both pass all nine validation passes, and produce identical output. The author has no signal at all. Worse, the failure is silent and gradual: the rule that was fast on a small repository becomes the rule that times out on a large one, with nothing in between.
+
+The information needed to give that feedback already exists and is already collected. `CallLog` knows exactly which predicate was called how many times in which round with which bindings. Pass 7 footprints know which ref globs each predicate reaches. The adornments computed in pass 8 are the plan, literally -- `Adornment::suffix()` already renders `bfb`.
+
+Turning that into a `--plan` output is close to free, and it is a much better slide than most of what is currently in the README. A screen showing the adorned body, the ref globs each literal touches, and the actual call counts from the last run makes the author-as-planner claim concrete instead of theoretical.
+
+**Options**
+- Option A -- `git query run --plan`: print the goal and each rule body with per-literal adornments and, for EDB literals, the backing ref globs. Static, no execution needed, derived entirely from `CheckedProgram`. A few hours.
+- Option B -- A, plus print the `CallLog` summary after a run: calls per predicate per round, answers per call. This is the part that catches a bad order empirically, and the data is already in `LoopResult`.
+- Option C -- B, plus a lint in `gix-query-check` or in `rules check`: warn when a literal at position i has an all-free adornment while a later literal would bind its variables. That is the textbook bad-order signature and it is detectable statically from the adornments pass 8 already computes. Risk: false positives where the free enumeration is genuinely the cheap one, so it must be a warning and never an error.
+- Option D -- do nothing and rely on the author. Defensible for a research prototype; not defensible for a tool whose pitch is that policy authors -- not engine authors -- write the rules.
+
+**Recommendation**
+A and B before the talk; they are cheap, they use data that already exists, and they make an abstract design claim visible. C afterwards, as a warning only. High confidence that A and B are worth it; C is the judgement call, because a heuristic that cries wolf about literal order would undermine the trust the rest of the diagnostics have earned.
