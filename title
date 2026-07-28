@@ -1,0 +1,1 @@
+explain is fully built in gix-query-eval and reachable from nothing: no subcommand, no library export

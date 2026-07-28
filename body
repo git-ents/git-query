@@ -1,0 +1,26 @@
+**What**
+Derivation-tree recovery, including the negation-witness reconstruction that Nemo cannot supply, is implemented and golden-tested. It is not exported from the library facade and there is no `explain` subcommand. The README front-page demo shows its output.
+
+**Where**
+- `crates/gix-query-eval/src/trace.rs:89` -- `pub fn explain(...)`, with `DerivationTree` and `NegationWitness` (`trace.rs:38-72`) and 500 lines of correct-looking mapping from Nemo trace onto source rules.
+- `crates/gix-query-eval/src/golden.rs` (812 lines) -- golden trees.
+- `crates/gix-query/src/lib.rs` -- exports `checked_program`, `run_goal`, `run_predicate`. No `explain`, no `DerivationTree`.
+- `crates/git-query/src/main.rs:5` -- "Tier 2 and `explain` are not implemented yet."
+- `README.md:16-19` -- the demo block ends with `git query explain` and a negation witness.
+
+Reproduced: `git query explain` returns `error: unrecognized subcommand`.
+
+**Why it matters**
+This is the most expensive built-but-unshipped thing in the workspace, and it is the part of the pitch that is hardest to explain in words and easiest to show. "The repository carries the rules" is abstract; a derivation tree with `!blocked(HEAD)` annotated as a negation witness makes it concrete in one screen. The README knows that -- it is the closing line of the demo.
+
+It is also the answer to the second-most-likely hostile question, "how do I know why it said yes". The answer exists. It is just not wired to a verb.
+
+The last hop is small: `trace::explain` takes `(&RewrittenProgram, &NemoProgram, &NemoTables, &PredicateKey, &[Value])`, and `LoopResult` already carries `tables`. What is missing is a renderer, a subcommand, and a decision about how a user names the tuple to explain.
+
+**Options**
+- Option A -- wire the minimum: `git query explain <goal>` where the goal must be fully ground, run the goal, take the first answer tuple, render the tree with box-drawing characters. Half a day. Covers the README demo exactly.
+- Option B -- A, plus the re-annotation step the DEVPLAN Phase 4 specifies -- join tree leaves against the demand call log to attach source refs, builtin modes, and the rules snapshot. That is what turns a tree into an audit record, and it is the difference between a nice visualization and the thing that justifies storing policy in refs.
+- Option C -- neither, and cut `explain` from the README demo. Defensible if the time genuinely is not there, but it removes the strongest visual from the talk.
+
+**Recommendation**
+A before the talk, B after. Do not do C. Also decide a depth or node limit before shipping: nothing in `trace.rs` bounds tree size, and a recursive policy over a real history will produce a tree that scrolls off the screen. High confidence on the priority; the depth limit is the part I am least sure about, since a truncated proof has some of the same "no safe reading" problem as a truncated relation.
