@@ -1,0 +1,29 @@
+**What**
+The active program is the union of every ref under `refs/meta/rules/*` at read time. The spec serializes concurrent changes to that set with a compare-and-swap on an epoch ref, and defines program identity as the (ref, oid) snapshot. Neither exists. A result records nothing about which program produced it.
+
+**Where**
+- `docs/query-and-rules.adoc:277` -- "The active program is the union over `refs/meta/rules/*`."
+- `docs/query-and-rules.adoc:278` -- "Program identity is the snapshot of (ref -> OID)."
+- `docs/query-and-rules.adoc:283-287` -- "Every rule push also advances `refs/meta/rules-epoch`, and pushes both with `git push --atomic`. Concurrent rule pushes then conflict by construction on the epoch compare-and-swap; the loser retries."
+- `DEVPLAN.md:1039` -- lists "the epoch-ref CAS from §2.4, program-identity snapshot" as `gix-query-rules` responsibilities.
+- A workspace grep for `epoch` and `snapshot` in `crates/**/*.rs` returns three unrelated doc comments and nothing else.
+- `crates/gix-query-rules/src/assemble.rs:26-40` -- `assemble` calls `store.list()` then `store.get()` per name, with no snapshot boundary. A concurrent push between the list and a get, or between two gets, yields a program that never existed as a consistent state.
+- `crates/gix-query-rules/src/store.rs:56-63` -- `put` commits forward with no CAS and no epoch advance.
+- `crates/gix-query/src/lib.rs:139-159` -- `run_checked_goal` returns bare rows. Nothing carries the module set.
+
+**Why it matters**
+Two distinct consequences.
+
+**Racing.** Two people publishing modules at the same time can each succeed while the assembled program that results was validated by neither. This is precisely the case whole-program validation exists to catch -- a cross-module negation cycle -- and the absence of serialization reintroduces it through the back door. Low probability, but the failure mode is a repository whose stored program does not pass its own check, which per the separate wedging issue means every query fails until someone finds and deletes a module.
+
+**Replay.** "Policy as repository data with history, review, and an audit trail" is the pitch (`README.md:6`). An audit trail you cannot replay is a log, not an audit trail. Today a result is a set of rows with no attached statement of which module oids, which host refs, and which tool version produced it. Six months later, reconstructing why a gate approved a merge means guessing at `git log refs/meta/rules/*` and hoping no host ref moved.
+
+The pieces for the second half are close. `RuleStore::list` plus `Store::retrieve` already resolve per-module oids; `Footprint::ref_globs` from pass 7 already says which host ref namespaces were read; `CallLog` already records which refs actually answered. The snapshot is a `BTreeMap<String, ObjectId>` away.
+
+**Options**
+- Option A -- fix consistency only: resolve every rule ref oid once, up front, and assemble from that fixed set. Removes the torn-read window without any new ref. Does not serialize concurrent writers, but makes each reader see a coherent program.
+- Option B -- A, plus the epoch ref and CAS on `put` as specified. Serializes writers. Costs a second ref and a retry loop, and only helps when everyone writes through the tool.
+- Option C -- A, plus emit the snapshot: a `--provenance` flag on `run` (or a footer on `explain`) printing the module name/oid pairs, the resolved host refs from the call log, and the tool and Nemo versions. This is the artifact a gate should archive alongside its verdict, and it is also most of the cache key input.
+
+**Recommendation**
+A and C. A is a small correctness fix; C is what makes the audit-trail claim in the README true, and it is the same data the cache key needs, so it pays twice. B is worth doing but it is the least urgent of the three -- the race needs two simultaneous rule authors, which is not the demo and probably not the first year. Medium-high confidence.
