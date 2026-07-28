@@ -1,0 +1,41 @@
+**What**
+The mode error is the tool signature diagnostic -- the message that turns an hour-long query into a compile error, which is the README central claim. It ends with an instruction to run a command that does not contain the information it promises.
+
+**Where**
+- `crates/gix-query-check/src/error.rs:394-397`:
+
+```
+"{predicate} supports no mode vector satisfied by binding argument(s) {bound:?} in {site}; \
+ see `git query predicates` for the vectors it supports"
+```
+
+- `crates/git-query/src/main.rs:230-236` -- `print_predicates` prints `name/arity\tdoc` and nothing else. It reads `registry.predicates()` and never touches `entry.class`, where the `ModeSet` lives (`crates/gix-query-ir/src/registry.rs:175-182`).
+
+What a first-time user actually sees:
+
+```
+$ git query run commit
+error: goal failed validation:
+commit/1 supports no mode vector satisfied by binding argument(s) [] in the goal; see `git query predicates` for the vectors it supports
+
+$ git query predicates
+commit/1	the revision names a commit
+```
+
+**Why it matters**
+Four things are wrong at once and they compound:
+
+1. The cross-reference is broken. The user follows the instruction and learns nothing.
+2. `{bound:?}` renders an empty `Vec<usize>` as `[]`. Rust `Debug` formatting is leaking into the primary user-facing diagnostic, and `[]` reads as noise rather than as "you bound nothing".
+3. The message never says what a mode is or why one exists. It states a violation of a concept the reader has not been introduced to, in the reader first thirty seconds with the tool.
+4. `CheckError::UnsupportedEdbMode` carries a `span` field (`error.rs:406`) that no renderer uses. The location is computed and discarded.
+
+The README argues that this compile error *is* the feature. It is -- I verified the check fires correctly and refuses to enumerate the commit graph. But the feature the audience will judge is the message, and right now the message sends them down a dead end.
+
+**Options**
+- Option A -- fix the cross-reference: make `git query predicates` print modes and types. Smallest change, and worth doing regardless (filed separately). Leaves the message itself unimproved.
+- Option B -- inline the answer. Print the supported vectors in the error, name the arguments that must be bound by their registry type, and suggest the fix concretely. Something like: "`commit/1` must be called with argument 0 (rev) bound; you bound nothing. Either supply it -- `git query run commit --bind 0=<rev>` -- or call a predicate that enumerates. Enumerating every commit is refused because it is unbounded over history." Costs the registry being reachable from the error renderer, which it already is at the call site.
+- Option C -- B, plus render the span as a caret diagnostic against the goal text.
+
+**Recommendation**
+B, and treat the message text as a deliverable rather than a string. This is the one error a conference audience is most likely to see on screen. High confidence.
