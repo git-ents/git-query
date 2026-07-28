@@ -1,0 +1,1 @@
+rules add stores before validating, so one bad module wedges every query in the repository, and there is no rules rm

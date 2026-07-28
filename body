@@ -1,0 +1,37 @@
+**What**
+`git query rules add` writes the module ref first and validates the assembled program second. Because assembly is whole-program, a single module that fails any of the nine passes makes every subsequent query, and `rules check`, and every further `rules add`, fail. The CLI exposes no way to remove a module.
+
+**Where**
+- `crates/git-query/src/main.rs:145-155` -- `store.put(&name, &source)?;` then `gix_query::checked_program(&repo)?;`
+- `crates/git-query/src/main.rs:61-64` -- the doc comment on `RulesCommand::Add` states the opposite: "Validates the whole program -- every module currently published, plus this one -- before storing, so a push that would break another module composition is rejected rather than silently accepted."
+- `crates/gix-query-rules/src/store.rs:78-81` -- `RuleStore::delete` exists in the library and is not surfaced by any subcommand.
+
+Reproduced on a scratch repo:
+
+```
+$ git query rules add bad bad.dl
+error: assembled program failed validation:
+bad.nosuchpred/1 in rule r0 is not defined: ...
+$ git query rules list
+bad
+review
+$ git query run tree_entry --bind 0=<oid>
+error: assembled program failed validation: ...
+$ git query rules --help
+Commands: add, list, check, help
+```
+
+Recovery requires `git update-ref -d refs/meta/rules/bad`, which means reaching past the tool into raw plumbing.
+
+**Why it matters**
+This is a demo-killer. A typo in a live-authored rule module during the talk bricks the repository for every subsequent command, and the only fix is to drop out of the tool. It is also the worst possible first-run experience: the error message names the mistake correctly but the tool has already made it permanent.
+
+The deeper issue is that whole-program assembly gives modules no fault isolation. The design chose whole-program validation for a good reason (two valid modules can compose into a negation cycle), but it did not choose what happens when the program is already broken. Right now the answer is total unavailability, including unavailability of the commands that would fix it.
+
+**Options**
+- Option A -- validate first, store second. One-line reorder plus a `rules rm`. Restores the doc comment as truth. Does not fix the case where a module is pushed directly by `git push` rather than through the CLI.
+- Option B -- A, plus make `rules list`, `rules rm`, and `rules show` never assemble, so the repair path is always available even when the program is broken. `rules list` already does not assemble; `rules rm` needs to be written that way deliberately.
+- Option C -- A and B, plus a `--force` on `add` that stores an invalid module knowingly, and make the assembly error name the offending module ref in a "remove with `git query rules rm <name>`" hint. The error currently prints `bad.nosuchpred/1` and leaves the reader to infer that `bad` is a module name.
+
+**Recommendation**
+C, and it is the highest-value hour in this list. High confidence: the doc comment already agrees, so this is a straightforward defect against stated intent plus one missing subcommand.
