@@ -6,6 +6,9 @@ pub enum Error {
     /// The underlying `gix-store` operation failed.
     #[error(transparent)]
     Store(#[from] gix_store::Error),
+    /// A module name is not a valid ref segment.
+    #[error(transparent)]
+    InvalidName(#[from] gix_store::InvalidRefName),
     /// Computing the stored record's schema failed.
     #[error(transparent)]
     Schema(#[from] facet_git_tree::SchemaError),

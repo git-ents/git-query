@@ -1,9 +1,7 @@
 //! Rule-module storage at `refs/meta/rules/<name>`, via `gix-store`.
 
 use facet::Facet;
-use facet_git_tree::schema_of;
-use facet_value::{from_value, to_value};
-use gix_store::Store;
+use gix_store::{GixRefStore, Kind, Layout, RefPrefix, RefSegment, RepoStore, Typed};
 
 use crate::error::Error;
 
@@ -27,24 +25,35 @@ struct RuleModuleRecord {
 
 /// Storage for rule modules, one Git ref per module name.
 pub struct RuleStore<'r> {
-    store: Store<'r>,
+    store: RepoStore<'r>,
+    kind: RefSegment,
 }
 
 impl<'r> RuleStore<'r> {
     /// Open the rule store over `repo`.
     pub fn open(repo: &'r gix::Repository) -> Result<Self, Error> {
-        let store = Store::open_with_prefixes(repo, DATA_PREFIX, SCHEMA_PREFIX)?;
-        Ok(Self { store })
+        let layout = Layout {
+            data: RefPrefix::new(DATA_PREFIX).expect("built-in ref prefix is valid"),
+            schema: RefPrefix::new(SCHEMA_PREFIX).expect("built-in ref prefix is valid"),
+        };
+        let store = RepoStore::open_with_layout(repo, layout);
+        let kind = RefSegment::new(KIND).expect("built-in ref segment is valid");
+        Ok(Self { store, kind })
+    }
+
+    fn kind(&self) -> Kind<'_, Typed<RuleModuleRecord>, GixRefStore<'r>, &'r gix::OdbHandle> {
+        self.store.kind(self.kind.clone())
     }
 
     /// Publish this crate's schema for the `rules` kind, unless the current
-    /// one already matches -- `put_schema` always commits forward, even when
+    /// one already matches -- `publish` always commits forward, even when
     /// nothing changed, so skipping a no-op call keeps a module's history
     /// free of empty schema churn.
     fn ensure_schema(&self) -> Result<(), Error> {
-        let doc = schema_of::<RuleModuleRecord>()?;
-        if self.store.schema(KIND)?.as_ref() != Some(&doc) {
-            self.store.put_schema(KIND, &doc)?;
+        let kind = self.kind();
+        let doc = facet_git_tree::schema_of::<RuleModuleRecord>()?;
+        if kind.schema().get()?.as_ref() != Some(&doc) {
+            kind.publish()?;
         }
         Ok(())
     }
@@ -56,27 +65,30 @@ impl<'r> RuleStore<'r> {
         let record = RuleModuleRecord {
             source: source.to_owned(),
         };
-        let value = to_value(&record)?;
-        Ok(self.store.store(KIND, name, &value, None)?)
+        let name = RefSegment::new(name)?;
+        Ok(self.kind().put(&name, &record)?)
     }
 
     /// The current source text for module `name`, or `None` if it has never
     /// been published.
     pub fn get(&self, name: &str) -> Result<Option<String>, Error> {
-        let Some(value) = self.store.retrieve(KIND, name)? else {
-            return Ok(None);
-        };
-        let record: RuleModuleRecord = from_value(value).map_err(Box::new)?;
-        Ok(Some(record.source))
+        let name = RefSegment::new(name)?;
+        Ok(self.kind().get(&name)?.map(|record| record.source))
     }
 
     /// Every published module name, sorted.
     pub fn list(&self) -> Result<Vec<String>, Error> {
-        Ok(self.store.list(KIND)?)
+        Ok(self
+            .kind()
+            .list()?
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect())
     }
 
     /// Delete module `name`. Returns whether it existed.
     pub fn delete(&self, name: &str) -> Result<bool, Error> {
-        Ok(self.store.delete(KIND, name)?)
+        let name = RefSegment::new(name)?;
+        Ok(self.kind().remove(&name)?)
     }
 }
