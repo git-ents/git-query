@@ -12,6 +12,7 @@
 use gix_query_host::{AllBuiltins, RepoFacts};
 use gix_query_ir::{CheckedProgram, Registry};
 
+pub use gix_query_eval::{DerivationTree, NegationWitness};
 pub use gix_query_ir::{Registry as HostRegistry, Value};
 pub use gix_query_rules::RuleStore;
 
@@ -49,6 +50,20 @@ pub enum QueryError {
         position: usize,
         /// The predicate's actual arity.
         arity: usize,
+    },
+    /// [`explain_predicate`] needs one fully ground tuple to trace; `bound`
+    /// covered fewer positions than `predicate`'s arity.
+    #[error(
+        "`explain` needs every position of `{predicate}` bound (arity {arity}), but only \
+         {bound} were; explain has no free-position case the way `run` does"
+    )]
+    ExplainRequiresGroundTuple {
+        /// The predicate named.
+        predicate: String,
+        /// Its declared arity.
+        arity: usize,
+        /// How many positions `--bind` covered.
+        bound: usize,
     },
     /// Lowering the rewritten program to Nemo, or auditing that emission,
     /// failed.
@@ -149,6 +164,25 @@ fn run_checked_goal(
     checked: &CheckedProgram,
     goal: &gix_query_ir::Goal,
 ) -> Result<Vec<Vec<Value>>, QueryError> {
+    Ok(run_checked_goal_full(repo, checked, goal)?.2.answer)
+}
+
+/// [`run_checked_goal`], but keeping the converged tables and the rewritten
+/// and emitted program alongside the answer -- what [`explain_predicate`]
+/// needs to trace a derivation, since tracing re-runs against exactly the
+/// state a fresh call would otherwise discard.
+fn run_checked_goal_full(
+    repo: &gix::Repository,
+    checked: &CheckedProgram,
+    goal: &gix_query_ir::Goal,
+) -> Result<
+    (
+        gix_query_eval::RewrittenProgram,
+        gix_query_eval::NemoProgram,
+        gix_query_eval::LoopResult,
+    ),
+    QueryError,
+> {
     gix_query_check::check_goal(goal, checked).map_err(|e| QueryError::CheckGoal(join(&e)))?;
 
     let rewritten = gix_query_eval::rewrite_program(checked, goal);
@@ -159,5 +193,84 @@ fn run_checked_goal(
     let builtins = AllBuiltins::new(repo);
     let result = gix_query_eval::run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 64)?;
 
-    Ok(result.answer)
+    Ok((rewritten, emitted, result))
+}
+
+/// Tier 1's `explain`: trace the derivation of one fully ground tuple of
+/// `predicate`.
+///
+/// Every position must be bound in `bound` -- unlike [`run_predicate`], there
+/// is no free-position case here. [`gix_query_eval::explain`] traces one
+/// concrete tuple against a completed evaluation; a partially bound call has
+/// no single tuple to trace, and resolving that (which of possibly many rows
+/// to explain, and how to render several derivation trees at once) is a
+/// product decision the effect and query CLIs have not made yet, not a gap
+/// this function silently papers over. `explain` for tier 3 goals has the
+/// same open question one level up -- a goal's `select` can still name free
+/// variables -- so it is not offered here either.
+///
+/// This wires faithfully to [`gix_query_eval::explain`] rather than working
+/// around it, and that entry point has two known gaps of its own, pinned by
+/// `gix-query/tests/run.rs`: it returns `Ok(None)` for a bare base predicate
+/// traced directly with no defining rule (Nemo's tracer only produces a node
+/// when a join forces a rule application), and it errors on any predicate a
+/// rule module defines, because module predicates are always qualified with
+/// a `.` (`gix_query_rules::assemble`'s `qualify`) and the trace builds its
+/// Nemo fact text from the predicate name verbatim, which Nemo's parser
+/// rejects. Fixing either belongs to `gix-query-eval`, not here.
+///
+/// # Errors
+/// [`QueryError::ExplainRequiresGroundTuple`] if `bound` does not cover every
+/// position; otherwise see [`QueryError`].
+pub fn explain_predicate(
+    repo: &gix::Repository,
+    predicate: &str,
+    bound: &[(usize, Value)],
+) -> Result<Option<gix_query_eval::DerivationTree>, QueryError> {
+    let checked = checked_program(repo)?;
+
+    let key = checked
+        .registry()
+        .predicates()
+        .find(|entry| entry.key.name.as_ref() == predicate)
+        .map(|entry| entry.key.clone())
+        .ok_or_else(|| QueryError::UnknownPredicate(predicate.to_owned()))?;
+
+    for (position, _) in bound {
+        if *position >= key.arity {
+            return Err(QueryError::BindOutOfRange {
+                predicate: predicate.to_owned(),
+                position: *position,
+                arity: key.arity,
+            });
+        }
+    }
+    if bound.len() != key.arity {
+        return Err(QueryError::ExplainRequiresGroundTuple {
+            predicate: predicate.to_owned(),
+            arity: key.arity,
+            bound: bound.len(),
+        });
+    }
+    let mut tuple: Vec<Option<Value>> = vec![None; key.arity];
+    for (position, value) in bound {
+        tuple[*position] = Some(value.clone());
+    }
+    let tuple: Vec<Value> = tuple
+        .into_iter()
+        .map(|v| v.expect("every position bound, checked above"))
+        .collect();
+
+    let mut goal = gix_query_parse::goal_from_predicate(key.name.clone(), key.arity, bound);
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    let (rewritten, emitted, result) = run_checked_goal_full(repo, &checked, &goal)?;
+
+    Ok(gix_query_eval::explain(
+        &emitted,
+        &result.tables,
+        &rewritten,
+        &key,
+        &tuple,
+    )?)
 }
