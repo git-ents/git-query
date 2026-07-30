@@ -20,9 +20,48 @@ The engine was originally specified here as a hand-written semi-naive interprete
 Cozo remains rejected (§2.1).
 The Nemo spike (`spikes/nemo-spike/spike-report.md`) is the evidence, and §2.11 is the list of what adopting it costs.
 
+**§0 supersedes the mode/magic/demand machinery in the same way §2.11 superseded the interpreter.**
+The sentence two paragraphs up still names "the mode system, the magic-set rewrite, the demand loop" as ours; as of 2026-07-30 they are cut, not built around.
+Read §0 first; it lists exactly what §2.10 and its dependents it retires.
+
 Two constraints run through every phase and belong here rather than in a style guide.
 **Make invalid states unrepresentable** (§2.12) — in this project it is what holds the engine's fragment, so it is load-bearing rather than tasteful.
 And **one way to do things**: no second engine, no stable/nightly split, no trait with one implementation.
+
+---
+
+## 0. Simplification decision (2026-07-30): eager evaluation supersedes modes, magic sets, and the demand loop
+
+The project's scope is now explicitly experimental — the question being answered is whether the core idea holds, not whether queries over large repos are affordable on first run.
+Under that scope, the heaviest machinery in the plan defends against a cost we have decided to pay differently, and it goes.
+
+**Cut:**
+
+- The **mode system** (`mode.rs`, adornments, `ModeSet`, pass 8) and with it §2.10's magic-set rewrite (`rewrite.rs`) and the demand loop (`demand.rs`).
+  Together with their share of IR, registry mode declarations, and tests this is ~2,700 lines of the hardest code in the plan.
+- **Bound-argument builtins** — `span_diff(+Blob, +Covered, …)` (§1.8) and `introduced/2` (§1.7) — are deferred, not redesigned.
+  They were the only thing the mode system was load-bearing for once evaluation is eager; if a future vocabulary needs one, the mode system returns as a whole, not as a special case.
+- **Pass 6** (caps) — by its own admission a lint, not a soundness pass.
+- **Dead code already unconsumed:** `provenance.rs` (§2.9's traits; `trace.rs` built its own `DerivationTree` from Nemo's tracer instead) and `canonical.rs` (no caller until the cache subsystem exists; restore from git history when it does).
+
+**Kept, unchanged:** stratified negation and pass 5 (~280 lines, and the kernel's own rules are negation-shaped — `unsigned`, `dangling-anchor`, "member and not revoked"); passes 1–5, 7, 9, 10; Nemo at the pinned rev with its conformance suite; the `ascent` kernel and the ascent-vs-Nemo differential proptest, which remains the correctness story.
+
+**Replacement — eager footprint materialization:** for each base predicate in the goal's transitive footprint (pass 7, which was already an analysis with no errors), enumerate its full extension through `FactSource`, hand everything to Nemo as tables, run once to fixpoint, read back the goal relation.
+No rounds, no `magic_` relations, no re-running from cold.
+Every registry predicate must therefore be finitely enumerable given the footprint — which every git-backed base predicate is.
+
+**Affordability moves from demand-narrowing to amortization**, exploiting the fact that almost the entire EDB is content-addressed and immutable:
+
+1. **Extraction cache, keyed by OID.**
+   `tree_entry`, `parent`, claim payloads, anchor coverage — true forever once the object exists.
+   Never invalidated; GC of an unreachable object just means a slow re-fill (accepted under experimental scope, and consistent with §1.6's observation that GC state is a cache input).
+2. **Answer cache, keyed by the footprint ref-snapshot digest** §1.1 already specifies.
+   Retractions are new commits on the same refs, so any ref advance or deletion changes the digest and is automatically a miss — no invalidation logic, and the stale-verdict bug of §1.1 is impossible by construction.
+   Because answers are only reused across *identical* snapshots, non-monotonicity of derivation under ref moves is irrelevant; negation costs the cache design nothing.
+
+First query after a ref advance pays re-derivation over mostly-cached extraction — proportional to the delta of new objects, which is the property the demand loop was buying.
+
+**Sections this supersedes rather than deletes:** §2.10 (the rewrite decision and its SIPS payoff in §2.7), the pass-8 and mode entries wherever the nine-pass list is enumerated, the `gix-query-eval` row of §3's crate table (now: Nemo lowering, eager materialization, derivation-tree recovery), and §5's framing — affordability is still the real risk, but the answer is the two-level cache above, not demand.
 
 ---
 
