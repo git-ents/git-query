@@ -1,0 +1,21 @@
+[package]
+name = "gix-effect"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "The effect doc, its store schema, and define-time validation. No runtime -- see DEVPLAN-effect.md Phase B1."
+
+[dependencies]
+gix-query = { path = "../gix-query" }
+gix-query-ir = { path = "../gix-query-ir" }
+gix-query-parse = { path = "../gix-query-parse" }
+gix-store = { git = "https://github.com/git-ents/git-store.git" }
+gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
+facet-git-tree = { git = "https://github.com/git-ents/git-store.git" }
+facet = { version = "0.50.0-rc.0", features = ["reflect"] }
+gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
+thiserror = "2"
+
+[dev-dependencies]
+test-support = { path = "../test-support" }
+tempfile = "3"

@@ -9,6 +9,8 @@ members = [
     "crates/gix-query-kernel",
     "crates/gix-query",
     "crates/git-query",
+    "crates/gix-effect",
+    "crates/git-effect",
     "crates/test-support",
 ]
 # The spike that produced spikes/nemo-spike/spike-report.md. Kept as evidence,
