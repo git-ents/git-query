@@ -15,8 +15,13 @@
 //! [`gix_query::check_effect_acyclicity`]'s footprint-to-namespace projection
 //! via [`gix_query::body_read_namespaces`], D9's "calls, never reimplements"),
 //! and [`TriggerDetector::fire`] re-evaluates only *those* effects' `when`
-//! bodies, once with the transitioning ref rewound to `old` and once at `new`
-//! -- not the whole EDB, and not every registered effect.
+//! bodies, once against `self.repo` as it stands (`new`) and once against a
+//! read-only as-of view of it with only the transitioning ref overridden
+//! back to `old` (`gix_query::run_body_as_of`) -- not the whole EDB, and not
+//! every registered effect, and -- since D9 forbids reimplementing ref
+//! mechanics here -- not by writing to the repository to find out either
+//! (see [`TriggerDetector::fire`]'s own doc for why an earlier version of
+//! this module did, and why that was wrong).
 //!
 //! This is explicitly a performance ceiling, not a semantic one
 //! (`DEVPLAN-effect.md` D3): the observable contract is "fire iff `when`
@@ -34,9 +39,7 @@
 
 use std::collections::BTreeMap;
 
-use gix::refs::Target as RefTarget;
-use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
-use gix_query::{Namespace, Value};
+use gix_query::{Namespace, RefName, Value};
 use gix_store::{
     GixRefStore, InvalidRefName, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed,
 };
@@ -72,13 +75,9 @@ pub enum TriggerError {
     /// The effect store itself failed to open, list, or read a doc.
     #[error(transparent)]
     Doc(#[from] crate::doc::Error),
-    /// Rewinding or restoring the transitioning ref during before/after
-    /// comparison failed.
-    #[error(transparent)]
-    RefEdit(#[from] gix::reference::edit::Error),
     /// `transition.ref_` is not a legal Git ref name.
     #[error(transparent)]
-    InvalidRefName(#[from] gix::validate::reference::name::Error),
+    InvalidRefName(#[from] InvalidRefName),
 }
 
 /// A candidate effect that fired: its doc, and the rows its `when` derived at
@@ -135,15 +134,21 @@ impl<'r> TriggerDetector<'r> {
     /// the "before" snapshot, every other ref stays exactly as it is in
     /// `self.repo` right now.
     ///
-    /// This temporarily rewinds `transition.ref_` to `old` (or deletes it, if
-    /// `old` is `None`) to take the "before" snapshot, then restores it to
-    /// `new` -- best-effort, even on error, since leaving the repository with
-    /// a ref pointed at a stale value would be a far worse failure mode than
-    /// a propagated error. A caller running this against a live repository
-    /// (as opposed to a fixture under test) should serialize calls so no
-    /// other reader observes the rewound state; there is no lock here for the
-    /// same reason `gix-query`'s facade has none -- that belongs to whatever
-    /// hooks this into the server's ref transaction.
+    /// "At old" is answered through [`gix_query::run_body_as_of`], an
+    /// as-of view over `transition.ref_` alone (`gix_refstore::AsOfRefStore`,
+    /// via `git-store`) -- **not** by rewinding the real ref and restoring it
+    /// after, which this used to do. That mutated the repository to answer a
+    /// read: it wrote synthetic reflog entries, and an `old = None` (ref
+    /// creation) transition rewound by *deleting* the ref outright, briefly
+    /// making it absent to any concurrent reader -- unacceptable on the
+    /// server, where a [`gix_refstore::RefStore`] is D4's ref transaction
+    /// manager, not just a test fixture's convenience. A restore-on-`Drop`
+    /// guard also does not survive a panic-with-abort, a signal, or process
+    /// death, so a crash mid-window could leave a user's ref rewound or
+    /// deleted for good. The as-of view has none of these failure modes: it
+    /// issues no write at all (`fire` performs zero of them, pinned by this
+    /// module's tests), so there is nothing to restore and nothing for a
+    /// concurrent reader to observe.
     ///
     /// # Errors
     /// See [`TriggerError`].
@@ -153,7 +158,7 @@ impl<'r> TriggerDetector<'r> {
             return Ok(Vec::new());
         }
 
-        let name: gix::refs::FullName = transition.ref_.as_str().try_into()?;
+        let name = RefName::new(transition.ref_.as_str())?;
 
         // "at new": the repository's current, already-transitioned state.
         let mut after = BTreeMap::new();
@@ -161,57 +166,14 @@ impl<'r> TriggerDetector<'r> {
             after.insert(doc.name.clone(), gix_query::run_body(self.repo, &doc.when)?);
         }
 
-        // "at old": rewind just this one ref, re-evaluate, then restore.
-        let restore = RewindGuard {
-            repo: self.repo,
-            name: name.clone(),
-            restore_to: transition.new,
-        };
-        match transition.old {
-            Some(old) => {
-                self.repo.edit_reference(RefEdit {
-                    change: Change::Update {
-                        log: LogChange {
-                            mode: RefLog::AndReference,
-                            force_create_reflog: false,
-                            message: "gix-effect: rewind for delta-restricted re-evaluation".into(),
-                        },
-                        expected: PreviousValue::Any,
-                        new: RefTarget::Object(old),
-                    },
-                    name: name.clone(),
-                    deref: false,
-                })?;
-            }
-            None => {
-                self.repo.edit_reference(RefEdit {
-                    change: Change::Delete {
-                        expected: PreviousValue::Any,
-                        log: RefLog::AndReference,
-                    },
-                    name: name.clone(),
-                    deref: false,
-                })?;
-            }
-        }
-
+        // "at old": the same repository, read through a view where only
+        // `transition.ref_` differs -- overridden to `old`, or to "did not
+        // exist" when `old` is `None`.
         let mut before = BTreeMap::new();
-        let mut run_error = None;
         for doc in &candidates {
-            match gix_query::run_body(self.repo, &doc.when) {
-                Ok(rows) => {
-                    before.insert(doc.name.clone(), rows);
-                }
-                Err(e) => {
-                    run_error = Some(e);
-                    break;
-                }
-            }
-        }
-        drop(restore); // restores `transition.ref_` to `new`, even on error above
-
-        if let Some(e) = run_error {
-            return Err(e.into());
+            let rows =
+                gix_query::run_body_as_of(self.repo, &doc.when, [(name.clone(), transition.old)])?;
+            before.insert(doc.name.clone(), rows);
         }
 
         let mut firings = Vec::new();
@@ -230,36 +192,6 @@ impl<'r> TriggerDetector<'r> {
             }
         }
         Ok(firings)
-    }
-}
-
-/// Restores a ref to `restore_to` on drop, best-effort -- the "restore" half
-/// of [`TriggerDetector::fire`]'s rewind, run unconditionally so a failure
-/// mid-re-evaluation never leaves `transition.ref_` pointed at `old`.
-struct RewindGuard<'r> {
-    repo: &'r gix::Repository,
-    name: gix::refs::FullName,
-    restore_to: gix::ObjectId,
-}
-
-impl Drop for RewindGuard<'_> {
-    fn drop(&mut self) {
-        // Best-effort: there is no error channel from `Drop`, and failing to
-        // restore is already the worst case this guard exists to avoid, not
-        // one it can escalate out of.
-        let _ = self.repo.edit_reference(RefEdit {
-            change: Change::Update {
-                log: LogChange {
-                    mode: RefLog::AndReference,
-                    force_create_reflog: false,
-                    message: "gix-effect: restore after delta-restricted re-evaluation".into(),
-                },
-                expected: PreviousValue::Any,
-                new: RefTarget::Object(self.restore_to),
-            },
-            name: self.name.clone(),
-            deref: false,
-        });
     }
 }
 
@@ -514,13 +446,131 @@ mod tests {
         assert_eq!(firings[0].effect.name, "watches-members");
         assert_eq!(firings[0].new_rows.len(), 1);
 
-        // The rewind/restore must leave the ref at `new`, not `old`.
+        // `fire()` never touched the ref: it is still at `new`, where the
+        // test itself put it. See `fire_performs_no_writes_even_for_a_ref_creation`
+        // below for the stronger, whole-repository version of this check.
         let current = repo
             .find_reference(format!("refs/meta/members/{member_hex}").as_str())
             .unwrap()
             .id()
             .detach();
         assert_eq!(current, member_oid);
+    }
+
+    /// Pins the invariant this module exists to fix: **trigger detection
+    /// performs zero writes**. `fire()` used to answer "at old" by rewinding
+    /// the real ref and restoring it through a `Drop` guard -- and for `old =
+    /// None` (a ref creation, this test's case), "rewind" meant *deleting*
+    /// the ref outright for the duration of the call, briefly making it
+    /// absent to any concurrent reader on a server where a ref store is the
+    /// transaction manager (D4). The as-of view
+    /// (`gix_query::run_body_as_of`, `gix_refstore::AsOfRefStore`) answers
+    /// the same question without touching the repository at all: every ref
+    /// and the transitioning ref's own reflog are snapshotted before
+    /// `fire()` and asserted byte-identical after.
+    #[test]
+    fn fire_performs_no_writes_even_for_a_ref_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Fixture::init(dir.path());
+        let repo = fixture.open();
+        let store = EffectStore::open(&repo).unwrap();
+
+        store
+            .define(doc(
+                "watches-members",
+                "member(M)",
+                "member(M)",
+                &["refs/meta/candidates/*"],
+            ))
+            .unwrap();
+
+        let member_hex = fixture.commit("member commit");
+        let member_oid = gix::ObjectId::from_hex(member_hex.as_bytes()).unwrap();
+        let member_ref = format!("refs/meta/members/{member_hex}");
+        fixture.update_ref(&member_ref, &member_hex);
+
+        let detector = TriggerDetector::new(&repo);
+        let transition = Transition {
+            ref_: member_ref.clone(),
+            old: None,
+            new: member_oid,
+        };
+
+        let refs_before = fixture.refs();
+        let reflog_before = fixture.git(&["reflog", "show", &member_ref]);
+
+        let firings = detector.fire(&transition).unwrap();
+        assert_eq!(
+            firings.len(),
+            1,
+            "sanity: this is the same transition `creating_a_member_ref_fires_the_watching_effect` \
+             fires on, so it must still fire here"
+        );
+
+        assert_eq!(
+            fixture.refs(),
+            refs_before,
+            "fire() must not create, move, or delete any ref, including \
+             `transition.ref_` itself -- not even transiently"
+        );
+        assert_eq!(
+            fixture.git(&["reflog", "show", &member_ref]),
+            reflog_before,
+            "fire() must not write a synthetic reflog entry"
+        );
+    }
+
+    /// The advance shape of the same invariant (`old = Some`, not a
+    /// creation): rewinding a ref that already existed used to overwrite it
+    /// with an `Update`, which is a real write with its own reflog entry
+    /// even though the ref never goes absent the way the `None` case does.
+    /// `fire()` must be just as write-free here.
+    #[test]
+    fn fire_performs_no_writes_for_a_ref_advance() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Fixture::init(dir.path());
+        let repo = fixture.open();
+        let store = EffectStore::open(&repo).unwrap();
+
+        store
+            .define(doc(
+                "watches-members",
+                "member(M)",
+                "member(M)",
+                &["refs/meta/candidates/*"],
+            ))
+            .unwrap();
+
+        let member_hex = fixture.commit("member commit");
+        let member_oid = gix::ObjectId::from_hex(member_hex.as_bytes()).unwrap();
+        let member_ref = format!("refs/meta/members/{member_hex}");
+        fixture.update_ref(&member_ref, &member_hex);
+
+        let detector = TriggerDetector::new(&repo);
+        // A no-op advance is enough: the invariant under test is "no writes
+        // happen", not "the effect fires" (that is
+        // `an_effect_does_not_fire_when_nothing_new_is_derived`, right below).
+        let transition = Transition {
+            ref_: member_ref.clone(),
+            old: Some(member_oid),
+            new: member_oid,
+        };
+
+        let refs_before = fixture.refs();
+        let reflog_before = fixture.git(&["reflog", "show", &member_ref]);
+
+        detector.fire(&transition).unwrap();
+
+        assert_eq!(
+            fixture.refs(),
+            refs_before,
+            "fire() must not create, move, or delete any ref for an advance either"
+        );
+        assert_eq!(
+            fixture.git(&["reflog", "show", &member_ref]),
+            reflog_before,
+            "fire() must not write a synthetic reflog entry for an advance either"
+        );
     }
 
     /// D3: an effect whose `when` derives the *same* rows at `old` and `new`
