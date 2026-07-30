@@ -8,8 +8,17 @@
 //! read/write namespace sets ... checked as a validation pass in git-query,
 //! because effects share the rule body language." [`EffectDecl`] is exactly
 //! that declaration, carrying nothing else: no trigger body, no gate, no
-//! `then` clause. Those need the effect executor this crate deliberately does
-//! not build yet.
+//! `then` clause.
+//!
+//! Of "declared read/write namespace sets", only the write half is still
+//! declared. `docs/query-and-rules.adoc`'s "Triggers" section specifies the
+//! effect graph as built from *footprints*, and the pass follows the adoc: a
+//! write set is a promise about what an executor may advance, which no
+//! analysis can compute, while a read set is a property of a body that pass 7
+//! computes exactly. See [`EffectDecl::reads`].
+//!
+//! A trigger body, gate, and `then` clause need the effect executor this crate
+//! deliberately does not build yet.
 
 use std::fmt;
 use std::sync::Arc;
@@ -18,8 +27,8 @@ use crate::Span;
 
 /// A ref namespace pattern: an exact refname, or a `/*`-suffixed prefix.
 ///
-/// This is the unit [`EffectDecl::reads`] and [`EffectDecl::writes`] are
-/// expressed over. Comparison is prefix-aware by construction --
+/// This is the unit [`EffectDecl::writes`] -- and the read sets the effect
+/// stratification pass *computes* from footprints -- are expressed over. Comparison is prefix-aware by construction --
 /// `refs/claims/action/kiln/*` overlaps `refs/claims/*` -- rather than a
 /// string-equality shortcut a caller could forget to widen.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -87,13 +96,23 @@ impl fmt::Display for Namespace {
 /// Those belong to the effect executor
 /// (`ARCHITECTURE.md`'s "Charter, exhaustively"), which does not exist in
 /// this crate. What does exist is enough for the stratification pass --
-/// [`Namespace`] overlap between one effect's writes and another's reads is
-/// the edge the fork-bomb check walks.
+/// [`Namespace`] overlap between one effect's declared writes and the read
+/// set computed from another's body footprint is the edge the fork-bomb check
+/// walks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectDecl {
     /// The effect's name, unique within the program.
     pub name: Arc<str>,
-    /// Namespaces this effect's trigger reads.
+    /// Namespaces this effect's trigger *declares* it reads.
+    ///
+    /// Not consulted by anything. Reads are computed, not declared: the
+    /// effect stratification pass derives an effect's read set from its
+    /// body's footprint, because a declaration can claim to read nothing
+    /// while its trigger joins on every claim in the repository. This field
+    /// and the parser's `reads(...)` clause survive only so that existing
+    /// modules keep parsing; removing both is item D2 of
+    /// `DEVPLAN-effect.md`, and that is the ticket to close, not this
+    /// comment.
     pub reads: Vec<Namespace>,
     /// Namespaces this effect -- or any executor it invokes -- may advance.
     pub writes: Vec<Namespace>,

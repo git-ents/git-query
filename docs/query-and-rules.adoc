@@ -84,7 +84,17 @@ merits: an admission decision should not turn on a best-scoring-window heuristic
 
 * An effect watches a derived value. Refname watching is the degenerate case, `resolve(refname)`.
 * Anchor-movement watching is `bind(a, ·)`.
-* The effect graph is built from predicate dependency footprints.
+* The effect graph is built from predicate dependency footprints. An edge runs
+  from one effect's *declared* write set to another's *computed* read set: the
+  writes are a promise about what an executor may advance, which no analysis of
+  a body can compute, while the reads are the body's footprint mapped through
+  each reachable EDB predicate's `RefGlob` backing. A declared read set would
+  be a way to lie about what a trigger watches, so there is none.
+* A footprint predicate whose backing is not a ref glob -- content-addressed,
+  or an ad-hoc `--edb` table -- contributes no namespace and therefore no edge.
+  That is sound: neither is a ref any effect's write set can advance. The
+  mapping keeps those predicates beside the namespaces rather than discarding
+  them, so the coarsening is auditable.
 * Fork-bomb freedom holds given three conditions:
 +
 --
@@ -93,8 +103,11 @@ merits: an admission decision should not turn on a best-scoring-window heuristic
 . a result ref name is a function of the trigger tuple.
 --
 * Only the first is an analysis problem, and only the first lives here. The
-  acyclicity check is exported over footprints; enforcement of the other two
-  belongs to the forge.
+  acyclicity check is exported over footprints -- `gix-query`'s
+  `check_effect_acyclicity`, taking registered effect declarations plus their
+  body source and returning a cycle diagnostic that names the offending
+  namespace, so an effect that would read its own write set is rejected when it
+  is defined. Enforcement of the other two belongs to the forge.
 * The predicate-level dependency graph is coarser than a glob-intersection test,
   so the check is *sound and incomplete*: it can deny a program that would have
   been fine, and it can never admit a cycle. Incompleteness surfaces as a

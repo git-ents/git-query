@@ -30,11 +30,15 @@
 //!    stratum, over the same decomposition pass 5 and pass 7 already used.
 //!
 //! Plus, after the nine: effect stratification -- no cycle in the graph an
-//! effect's declared write set induces over another effect's declared read
-//! set (`ARCHITECTURE.md`'s git-effect section calls this fork-bomb
-//! freedom). Not numbered among the nine because it validates
+//! effect's declared write set induces over another effect's *computed* read
+//! set, the latter being pass 7's footprint mapped to ref namespaces
+//! (`ARCHITECTURE.md`'s git-effect section calls this fork-bomb freedom, and
+//! `docs/query-and-rules.adoc`'s "Triggers" section specifies the footprint
+//! as the graph's input). Not numbered among the nine because it validates
 //! [`gix_query_ir::EffectDecl`]s, a declaration form the rule body language
-//! does not produce.
+//! does not produce. Its pieces -- [`check_acyclicity`], [`read_namespaces`],
+//! [`footprint_of_body`] -- are public so that `gix-query`'s facade can offer
+//! the same check over effect docs at define time without a second graph.
 //!
 //! # What this crate does not do
 //!
@@ -68,8 +72,9 @@ mod registry_build;
 mod testutil;
 
 pub use error::{CheckError, Errors, Pass, Site};
+pub use pass10_effect_stratify::{EffectReads, ReadNamespaces, check_acyclicity, read_namespaces};
 
-use gix_query_ir::{CheckedProgram, Goal, GoalAdornments, Program, Registry};
+use gix_query_ir::{CheckedProgram, Footprint, Goal, GoalAdornments, Literal, Program, Registry};
 
 /// Run all nine validation passes, plus effect stratification, over
 /// `program`, extending `registry` with one IDB entry per predicate the
@@ -102,7 +107,7 @@ pub fn check(program: &Program, registry: &Registry) -> Result<CheckedProgram, E
     let footprints = pass7_footprint::compute(program, &working, &stratify);
     let adornments = pass8_modes::check(program, &mut working, &mut errors);
     pass9_mint::check(program, &working, &stratify, &mut errors);
-    pass10_effect_stratify::check(program, &mut errors);
+    pass10_effect_stratify::check(program, &working, &footprints, &mut errors);
 
     if !errors.is_empty() {
         return Err(errors);
@@ -115,6 +120,24 @@ pub fn check(program: &Program, registry: &Registry) -> Result<CheckedProgram, E
         adornments,
         footprints,
     ))
+}
+
+/// The footprint of a bare body -- a goal's, or an effect's `when`/`gate`
+/// clause -- against an already-[`check`]ed program.
+///
+/// Pass 7 keys its footprints by the predicate a rule *defines*, and a body
+/// defines nothing, so a consumer that has a body rather than a predicate
+/// name needs this instead of [`CheckedProgram::footprint`]. Composed with
+/// [`read_namespaces`] it is how an effect's read set is computed from its
+/// trigger body, which is the input [`check_acyclicity`] wants.
+///
+/// `body` should already have been resolved against `checked`'s registry
+/// (`gix_query_parse::resolve_body`) and validated by [`check_goal`]; an
+/// unresolved literal contributes nothing rather than erroring, because
+/// reporting it is pass 2's job.
+#[must_use]
+pub fn footprint_of_body(body: &[Literal], checked: &CheckedProgram) -> Footprint {
+    pass7_footprint::compute_body(body, checked.registry(), checked.all_footprints())
 }
 
 /// Check a standalone goal -- a tier-1, tier-2, or tier-3 query -- against an

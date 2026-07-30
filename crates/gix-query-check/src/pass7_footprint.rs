@@ -27,7 +27,7 @@
 
 use std::collections::BTreeMap;
 
-use gix_query_ir::{Footprint, PredicateKey, Program, Registry};
+use gix_query_ir::{Footprint, Literal, PredicateKey, Program, Registry};
 
 use crate::pass5_stratify::Stratify;
 
@@ -64,6 +64,42 @@ pub(crate) fn compute(
     }
 
     footprints
+}
+
+/// The footprint of a bare *body* -- a goal, or an effect's `when`/`gate`
+/// clause -- against footprints this pass already computed for a program.
+///
+/// A body defines no predicate, so it has no entry in [`compute`]'s map; what
+/// it has is literals, each of which is a host predicate (contributing its
+/// own backing), a builtin, or an IDB predicate of the program (contributing
+/// that predicate's already-computed footprint). This is the same three-way
+/// fold [`fold_literal`] performs, minus the SCC bookkeeping a body does not
+/// need: a body is never a member of any SCC, so every IDB dependency is
+/// "outside" it and its precomputed footprint is always the right thing to
+/// absorb.
+pub(crate) fn compute_body(
+    body: &[Literal],
+    registry: &Registry,
+    footprints: &BTreeMap<PredicateKey, Footprint>,
+) -> Footprint {
+    let mut combined = Footprint::default();
+    for lit in body {
+        let target = lit.key();
+        if let Some(entry) = registry.predicate(target)
+            && entry.class.is_edb()
+        {
+            combined.base.insert(target.clone());
+            combined
+                .ref_globs
+                .extend(entry.ref_globs().map(str::to_owned));
+        } else if registry.is_builtin(target) {
+            combined.builtins.insert(target.clone());
+        } else if let Some(dep_fp) = footprints.get(target) {
+            combined.absorb(dep_fp);
+        }
+        // Anything else is unresolved and already reported by pass 2.
+    }
+    combined
 }
 
 fn fold_literal(

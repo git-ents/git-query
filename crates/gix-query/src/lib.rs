@@ -6,14 +6,22 @@
 //! it: parse a goal, resolve it against the host registry, validate it,
 //! magic-set rewrite it, lower it to Nemo, audit the emission, and run it to
 //! a demand fixpoint against a real repository.
+//!
+//! [`check_effect_acyclicity`] is the other half of the facade's charter
+//! (`DEVPLAN.md` §2.6: "git-query exports the footprint and the acyclicity
+//! check; it does not enforce anything"): the fork-bomb check over a set of
+//! registered effects, computing each one's read set from its own body rather
+//! than trusting a declaration.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+
+use std::sync::Arc;
 
 use gix_query_host::{AllBuiltins, RepoFacts};
 use gix_query_ir::{CheckedProgram, Registry};
 
 pub use gix_query_eval::{DerivationTree, NegationWitness};
-pub use gix_query_ir::{Registry as HostRegistry, Value};
+pub use gix_query_ir::{EffectDecl, Footprint, Namespace, Registry as HostRegistry, Value};
 pub use gix_query_rules::RuleStore;
 
 /// Join a list of diagnostics into one message, one per line.
@@ -69,6 +77,172 @@ pub enum QueryError {
     /// failed.
     #[error(transparent)]
     Eval(#[from] gix_query_eval::EvalError),
+}
+
+/// One effect, as [`check_effect_acyclicity`] needs to see it: a declaration
+/// carrying the *declared write set*, plus the rule-language source of every
+/// body whose footprint makes up its *computed read set*.
+///
+/// `bodies` is a list because an effect doc has more than one
+/// (`DEVPLAN-effect.md` D1: `when` and `gate`) and both are read at trigger
+/// and admission time, so both belong in the read set. Each entry is goal-body
+/// text -- the same language a rule body is written in, parsed by
+/// `gix-query-parse` and validated by the same passes as any module, which is
+/// the entire reason effects share this repo.
+///
+/// [`EffectDecl::reads`] is *not* consulted. A declared read set can lie; a
+/// footprint cannot. (Removing the field, and the parser clause behind it, is
+/// `DEVPLAN-effect.md` item D2.)
+#[derive(Debug, Clone)]
+pub struct EffectUnderCheck {
+    /// The effect's name and declared write set.
+    pub decl: EffectDecl,
+    /// Rule-language source for each body the effect reads through -- an
+    /// effect doc's `when` and `gate`.
+    pub bodies: Vec<String>,
+}
+
+/// Why a set of effects failed [`check_effect_acyclicity`].
+///
+/// A cycle names the namespace, because "you have a fork bomb" is not
+/// actionable and "effect `a` writes `refs/meta/claims/*`, which effect `b`
+/// reads" is.
+#[derive(Debug, thiserror::Error)]
+pub enum EffectCheckError {
+    /// One of an effect's bodies did not parse.
+    #[error("effect `{effect}`'s body did not parse:\n{diagnostics}")]
+    Parse {
+        /// The effect whose body it was.
+        effect: String,
+        /// The parser's diagnostics, one per line.
+        diagnostics: String,
+    },
+    /// One of an effect's bodies parsed but failed validation against the
+    /// checked program -- an unresolved predicate, a mode violation, anything
+    /// [`gix_query_check::check_goal`] rejects. A body that does not validate
+    /// has no trustworthy footprint, so it is reported rather than silently
+    /// contributing an empty read set.
+    #[error("effect `{effect}`'s body failed validation:\n{diagnostics}")]
+    Body {
+        /// The effect whose body it was.
+        effect: String,
+        /// The validator's diagnostics, one per line.
+        diagnostics: String,
+    },
+    /// The fork bomb: following declared writes into computed reads leads back
+    /// to an effect already on the path.
+    #[error(
+        "effect `{from}` writes `{namespace}`, which effect `{to}`'s body reads, closing a \
+         cycle in the effect graph"
+    )]
+    Cycle {
+        /// The effect whose write closes the cycle.
+        from: Arc<str>,
+        /// The effect whose computed read set the write overlaps.
+        to: Arc<str>,
+        /// The namespace the two share -- the thing to change.
+        namespace: Namespace,
+    },
+}
+
+/// The fork-bomb check over a set of registered effects: reject any cycle in
+/// the graph whose edges run from one effect's *declared* write set into
+/// another's *computed* read set.
+///
+/// This is the export `DEVPLAN-effect.md` D9 assigns to this crate and
+/// `gix-effect` calls at `git effect define` time, over every effect the
+/// repository has registered plus the one being defined: rejecting a cycle
+/// when the doc is written is the earliest possible boundary, and it means
+/// `gix-effect` reimplements neither the graph, nor the DFS marks, nor
+/// [`Namespace`] overlap.
+///
+/// Each effect's read set is computed, not declared: every body in
+/// [`EffectUnderCheck::bodies`] is parsed, resolved and validated against
+/// `checked`, its footprint taken, and that footprint mapped to ref
+/// namespaces through the registry's [`gix_query_ir::Backing::RefGlob`]
+/// declarations. Backings that denote no ref namespace -- content-addressed
+/// and ad-hoc predicates -- contribute no edge, deliberately: neither is a ref
+/// an effect's write set can advance. `gix_query_check::ReadNamespaces`
+/// records which predicates those were, and a caller that wants to show them
+/// can recompute with `gix_query_check::read_namespaces`.
+///
+/// The check is **sound and incomplete**, per `docs/query-and-rules.adoc`: the
+/// predicate-level dependency graph is coarser than a glob-intersection test,
+/// so it can deny a program that would in fact have terminated, and it can
+/// never admit a cycle. A spurious *denial* is debuggable; the reverse would
+/// be a fork bomb.
+///
+/// # Errors
+/// Every problem found, not just the first: one [`EffectCheckError`] per
+/// unparsable body, per invalid body, and per cycle-closing edge.
+pub fn check_effect_acyclicity(
+    checked: &CheckedProgram,
+    effects: &[EffectUnderCheck],
+) -> Result<(), Vec<EffectCheckError>> {
+    let mut errors: Vec<EffectCheckError> = Vec::new();
+    let mut graph_input: Vec<gix_query_check::EffectReads> = Vec::with_capacity(effects.len());
+
+    for effect in effects {
+        let mut footprint = Footprint::default();
+        for source in &effect.bodies {
+            match body_footprint(checked, &effect.decl.name, source) {
+                Ok(fp) => footprint.absorb(&fp),
+                Err(e) => errors.push(e),
+            }
+        }
+        graph_input.push(gix_query_check::EffectReads {
+            decl: effect.decl.clone(),
+            reads: gix_query_check::read_namespaces(&footprint, checked.registry()).namespaces,
+        });
+    }
+
+    errors.extend(
+        gix_query_check::check_acyclicity(&graph_input)
+            .into_iter()
+            .map(|e| match e {
+                gix_query_check::CheckError::EffectCycle {
+                    from,
+                    to,
+                    namespace,
+                    ..
+                } => EffectCheckError::Cycle {
+                    from,
+                    to,
+                    namespace,
+                },
+                // `check_acyclicity` produces exactly one variant; anything
+                // else would be a diagnostic about the rule program, which
+                // this entry point was not given and must not invent.
+                other => EffectCheckError::Body {
+                    effect: String::new(),
+                    diagnostics: other.to_string(),
+                },
+            }),
+    );
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Parse, resolve, validate and take the footprint of one effect body.
+fn body_footprint(
+    checked: &CheckedProgram,
+    effect: &str,
+    source: &str,
+) -> Result<Footprint, EffectCheckError> {
+    let mut goal = gix_query_parse::parse_goal(source).map_err(|e| EffectCheckError::Parse {
+        effect: effect.to_owned(),
+        diagnostics: join(&e),
+    })?;
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+    gix_query_check::check_goal(&goal, checked).map_err(|e| EffectCheckError::Body {
+        effect: effect.to_owned(),
+        diagnostics: join(&e),
+    })?;
+    Ok(gix_query_check::footprint_of_body(&goal.body, checked))
 }
 
 /// Assemble the whole program: every rule module currently published at

@@ -40,7 +40,9 @@ pub enum Pass {
     /// Effect stratification (numbered 10, after the nine) -- the
     /// fork-bomb-freedom check `ARCHITECTURE.md`'s git-effect section
     /// describes: no cycle in the graph an effect's declared write set
-    /// induces over another effect's declared read set. Not one of the nine
+    /// induces over another effect's *computed* read set -- pass 7's footprint
+    /// mapped to ref namespaces, as `docs/query-and-rules.adoc`'s "Triggers"
+    /// section specifies, because a declared read set can lie. Not one of the nine
     /// `docs/query-and-rules.adoc` numbers; it runs after them, over effect
     /// declarations rather than rules.
     EffectStratification,
@@ -433,14 +435,14 @@ pub enum CheckError {
         /// Where.
         span: Span,
     },
-    /// An effect's declared write set overlaps a namespace another effect
-    /// declares in its read set, and that second effect's writes lead --
+    /// An effect's declared write set overlaps a namespace another effect's
+    /// body is computed to read, and that second effect's writes lead --
     /// through zero or more further effects -- back to a namespace the first
     /// effect reads. This is the fork bomb: a signed transition that can
     /// trigger a chain of effects which eventually re-triggers itself.
     #[error(
-        "effect {from} writes {namespace}, which effect {to} reads, closing a cycle in the \
-         effect graph"
+        "effect {from} writes {namespace}, which effect {to}'s body reads, closing a cycle in \
+         the effect graph"
     )]
     EffectCycle {
         /// The effect whose write closes the cycle.
