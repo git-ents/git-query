@@ -1,60 +1,314 @@
 //! `claim/1`, `kind/2`, `target/2`, `signer/2`, `verdict/2` -- all five
-//! backed by `refs/meta/claims/*`.
+//! backed by `gix-attest`'s claim chains under `refs/claims/*`.
 //!
-//! One ref per claim, `refs/meta/claims/<hex>`, pointing at a commit; the
-//! claim's identity `C` is that commit's own oid, so no separate mapping is
-//! kept. `kind`, `target`, `signer`, and `verdict` are commit-message
-//! trailers on that same commit (`Kind:`, `Target:`, `Signer:`, `Verdict:`),
-//! read with `gix`'s own trailer parser rather than a hand-rolled one, so
-//! this crate never disagrees with `git interpret-trailers` about what counts
-//! as a trailer block.
+//! A claim is a chained commit on `refs/claims/<target-key>`; its identity `C`
+//! is that commit's own oid, so no separate mapping is kept. What the claim
+//! says is its [`Envelope`] -- a `gix-store` document in the commit's tree --
+//! and the signature is an SSHSIG block in the commit's standard `gpgsig`
+//! header. Nothing here parses a commit message: the trailer-backed store this
+//! module used to be (`refs/meta/claims/*`, `Kind:`/`Target:`/`Signer:`
+//! trailers) is gone, and with it the possibility of a fact that nobody signed.
+//!
+//! # Verification happens here, at fact-derivation time
+//!
+//! [`Claims::verify`] is called on every claim before any of its facts are
+//! emitted, and a claim that is not [`Verdict::Verified`] contributes *no
+//! rows*. That placement is the point: no rule can join on a claim whose
+//! signature fails, because no such claim ever enters the EDB, so no rule
+//! author has to remember to check. There is no predicate for "unverified
+//! claim" for the same reason -- the relation does not exist to be joined
+//! against.
+//!
+//! Crypto-verified is still not *valid*. Validity is `key_valid_at` (a rule's
+//! predicate over op-log admission order, [`crate::cand::key_valid_at`]), and
+//! this module only refuses cryptographic garbage. `gix-attest`'s
+//! [`Verdict`] has no `Valid` variant precisely so the two cannot be confused.
+//!
+//! # The relations, and where each column comes from
+//!
+//! | predicate | column | envelope field |
+//! |---|---|---|
+//! | `claim/1` | `C` | the claim commit's oid |
+//! | `kind/2` | `K` | [`Envelope::payload_kind`] |
+//! | `target/2` | `Obj` | [`Target::id`] -- the `kind` *label* is not a column |
+//! | `signer/2` | `M` | [`Envelope::key`], the key-add claim's id |
+//! | `verdict/2` | `V` | the `verdict` field of a `review` *payload* |
+//!
+//! `verdict/2` is the one that moved out of the envelope entirely. A verdict is
+//! payload vocabulary -- forge's review schema -- not envelope machinery, so it
+//! is read by decoding the payload document against the schema that travels
+//! with it, and a claim of any other payload kind contributes no verdict row.
+//! Until forge registers that schema and writes such payloads, the relation is
+//! simply empty: kept, not faked.
+//!
+//! Revocation needs no predicate of its own. A revocation *is* a claim, with
+//! `payload_kind = revocation` and its target naming the claim it revokes, so
+//! `kind(R, revocation), target(R, C)` already says "R revokes C" in the rule
+//! language. `gix-attest`'s structural mark ([`Claim::revoked_by`]) is the same
+//! fact read the other way round, and what a revocation *means* stays a rule's
+//! business.
 
 use gix::ObjectId;
-use gix::bstr::ByteSlice as _;
+use gix_anchor::{REBIND_PIN_KIND, RebindPin};
+use gix_attest::{
+    CLAIM_TARGET_KIND, Claim, Claims, Envelope, REVOCATION_KIND, Target, Verdict, target_key,
+};
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey, Value};
+use gix_store::{RefSegment, RepoStore};
 
-use crate::util::{backend, backend_boxed, fact, parse_oid, sym_oid};
+use crate::util::{backend, backend_msg, fact, parse_oid, sym_oid};
 
-const CLAIMS_PREFIX: &str = "refs/meta/claims/";
-
-/// One claim-attached two-place relation: its trailer token and its declared
-/// column type, traveling together rather than being re-derived per value.
+/// The [`Target::kind`] label a claim about an anchor carries.
 ///
-/// The registry declares each precisely -- `kind: Symbol`, `target: Oid`,
-/// `signer: Member`, `verdict: Symbol` (`gix_query_ir::host_predicates`) --
-/// but the value column used to be typed by *guessing from its shape*,
-/// trying `ObjectId::from_hex` on every trailer regardless of which relation
-/// it belonged to. That guess is silently wrong in both directions: a
-/// `Signer:` written as a bare email fails the parse and falls through as an
-/// opaque symbol with no diagnostic that it was never a member id, and a
-/// `Verdict:` that happened to look like 40 hex characters would be
-/// "canonicalized" through an oid parse for a column that was never oid-typed
-/// to begin with. Deriving [`TrailerRelation`] from the predicate key once,
-/// here, is what makes the column type a fact about the relation rather than
-/// a property inferred anew from every value it happens to read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrailerRelation {
-    /// `kind/2`, `Symbol`-typed.
-    Kind,
-    /// `target/2`, `Oid`-typed.
-    Target,
-    /// `signer/2`, `Member`-typed (the same hex wire shape as `Oid`).
-    Signer,
-    /// `verdict/2`, `Symbol`-typed.
-    Verdict,
-    /// `rev/2`, `Rev`-typed (the same hex wire shape as `Oid`) -- a
-    /// `rebind-pin` claim's own pinned revision (`gix_anchor::RebindPin::rev`,
-    /// ARCHITECTURE.md's `git-attest` payload; carried here on a trailer
-    /// until `git-attest`'s envelope exists, DELTA X1).
-    Rev,
-    /// `loc/2`, `Location`-typed -- a `rebind-pin` claim's pinned location,
-    /// formatted exactly as `cand/5`'s own `Loc` column
-    /// (`"<path>:<start>-<end>"`), so `cand`'s pin leg can read it back
-    /// verbatim rather than reassembling it from separate fields.
-    Loc,
+/// Attest never interprets a target kind ("targets are typed per check"), and
+/// anchor does not know attest exists, so the label that joins the two is
+/// query's -- this crate is the composition point, and this constant is where
+/// the composition is written down. `git attest sign anchor:<id>` produces
+/// exactly this.
+pub const ANCHOR_TARGET_KIND: &str = "anchor";
+
+/// The [`Envelope::payload_kind`] of a review assertion, whose payload carries
+/// `verdict/2`'s column.
+///
+/// Forge's vocabulary, named here because query composes it and forge does not
+/// exist yet to export it. When it does, this constant is replaced by its
+/// export rather than duplicated.
+const REVIEW_PAYLOAD_KIND: &str = "review";
+
+/// The field of a review payload `verdict/2` reads.
+const VERDICT_FIELD: &str = "verdict";
+
+/// How many revocation hops [`chain_target`] follows before giving up.
+///
+/// A revocation is stored on the chain of the claim it revokes, so finding a
+/// chain's target from one of its claims means following revocation targets
+/// down to a claim that is not itself a revocation. A revocation of a
+/// revocation is legal and terminates; a cycle is not constructible by
+/// `gix-attest`'s writer but is constructible by hand, and an unbounded walk
+/// over hand-written refs is a hang rather than a bad answer.
+const MAX_REVOCATION_HOPS: usize = 32;
+
+/// The claim chains of one repository, read through `gix-attest`.
+///
+/// A handle rather than free functions because every read needs the store,
+/// the store borrows the repository, and [`Claims`] borrows the store: three
+/// lifetimes that are one object's business, not each caller's.
+struct ClaimReader<'r> {
+    store: RepoStore<'r>,
+    /// The predicate being answered, for error attribution.
+    key: PredicateKey,
 }
 
-impl TrailerRelation {
+impl<'r> ClaimReader<'r> {
+    /// Open `repo`'s claims. The layout is `gix-attest`'s own, which is what
+    /// puts claim refs at `refs/claims/<target-key>`; naming it here rather
+    /// than spelling the prefix keeps this crate from having a second opinion
+    /// about where claims live.
+    fn open(repo: &'r gix::Repository, key: &PredicateKey) -> Self {
+        Self {
+            store: RepoStore::open_with_layout(repo, gix_attest::layout()),
+            key: key.clone(),
+        }
+    }
+
+    fn claims(&self) -> Claims<'_, gix_store::GixRefStore<'r>, &'r gix::OdbHandle> {
+        Claims::open(&self.store)
+    }
+
+    fn kind(
+        &self,
+    ) -> gix_store::Kind<
+        '_,
+        gix_store::Typed<Envelope>,
+        gix_store::GixRefStore<'r>,
+        &'r gix::OdbHandle,
+    > {
+        self.store.kind::<Envelope>(claim_segment())
+    }
+
+    /// Every verified claim in the repository, with the ref it lives on,
+    /// grouped chain by chain.
+    ///
+    /// Enumeration is over the claim kind's own entity list -- the refs under
+    /// `refs/claims/` -- and each chain is read whole through
+    /// [`Claims::resolve`], because a claim's revocation lives on the same
+    /// chain and re-deriving that structurally here would be a second opinion
+    /// about `gix-attest`'s own semantics.
+    fn all(&self) -> Result<Vec<(String, Claim)>, HostError> {
+        let kind = self.kind();
+        let claims = self.claims();
+        let mut out = Vec::new();
+        for name in kind.list().map_err(|e| backend(&self.key, e))? {
+            let Some(tip) = kind.get(&name).map_err(|e| backend(&self.key, e))? else {
+                continue;
+            };
+            let Some(target) = self.chain_target(tip)? else {
+                continue;
+            };
+            // A ref whose leaf is not the target key of the claims on it is
+            // not a claim ref `gix-attest` wrote; reading it as one would
+            // invent a chain out of hand-placed refs.
+            let derived = target_key(&target).map_err(|e| backend(&self.key, e))?;
+            if name.to_string() != derived.to_string() {
+                continue;
+            }
+            let refname = kind.reference(&name).as_str().to_owned();
+            for claim in claims.resolve(&target).map_err(|e| backend(&self.key, e))? {
+                if self.verified(&claim)? {
+                    out.push((refname.clone(), claim));
+                }
+            }
+        }
+        out.sort_by(|a, b| (&a.0, a.1.id).cmp(&(&b.0, b.1.id)));
+        Ok(out)
+    }
+
+    /// The verified claim `id`, with the ref it lives on, or `None` when `id`
+    /// is not a claim commit, is not on the chain its own envelope names, or
+    /// does not verify.
+    ///
+    /// A bound claim is read by walking one chain, not by scanning the
+    /// namespace: the chain is derived from the claim's own envelope, so
+    /// `target(+C, B)` inside a fixpoint costs one chain rather than every
+    /// claim in the repository.
+    fn one(&self, id: ObjectId) -> Result<Option<(String, Claim)>, HostError> {
+        let claims = self.claims();
+        let Ok(envelope) = claims.envelope_at(id) else {
+            // Not a claim commit at all -- the same "no such identity" answer
+            // `member/1` gives for an unregistered member, not an error.
+            return Ok(None);
+        };
+        let Some(target) = self.chain_target(envelope)? else {
+            return Ok(None);
+        };
+        let chain = claims
+            .resolve(&target)
+            .map_err(|e| backend(&self.key, e))?
+            .into_iter()
+            .find(|claim| claim.id == id);
+        let Some(claim) = chain else {
+            return Ok(None);
+        };
+        if !self.verified(&claim)? {
+            return Ok(None);
+        }
+        let refname = claims
+            .reference(&target)
+            .map_err(|e| backend(&self.key, e))?
+            .as_str()
+            .to_owned();
+        Ok(Some((refname, claim)))
+    }
+
+    /// The target whose chain `envelope`'s claim sits on: its own target,
+    /// unless it is a revocation, which lives on the chain of the claim it
+    /// revokes.
+    ///
+    /// `None` when the walk runs past [`MAX_REVOCATION_HOPS`] -- a
+    /// hand-constructed cycle, which contributes no facts rather than hanging.
+    fn chain_target(&self, envelope: Envelope) -> Result<Option<Target>, HostError> {
+        let claims = self.claims();
+        let mut envelope = envelope;
+        for _ in 0..MAX_REVOCATION_HOPS {
+            if !(envelope.payload_kind == REVOCATION_KIND
+                && envelope.target.kind == CLAIM_TARGET_KIND)
+            {
+                return Ok(Some(envelope.target));
+            }
+            let Ok(next) = claims.envelope_at(envelope.target.id.into()) else {
+                return Ok(None);
+            };
+            envelope = next;
+        }
+        Ok(None)
+    }
+
+    /// Whether `claim`'s signature is the signing key's over its own bytes.
+    ///
+    /// A [`Claims::verify`] *error* -- an envelope naming a key that is not a
+    /// key claim, a key chain that cannot be read -- is "not verified" rather
+    /// than a query failure. A claim signed by an unreachable key is exactly as
+    /// unusable as one signed badly, and one such claim in a namespace must not
+    /// fail every query that reads the namespace. This is also why a key-add
+    /// claim contributes no facts today: a chain root names no predecessor to
+    /// verify against, and whether to trust a root is policy, not cryptography.
+    fn verified(&self, claim: &Claim) -> Result<bool, HostError> {
+        Ok(matches!(self.claims().verify(claim), Ok(Verdict::Verified)))
+    }
+
+    /// `claim`'s payload, decoded as `T`, or `None` when its payload kind is
+    /// not `payload_kind` or the payload does not decode as `T`.
+    ///
+    /// The decode is store's document decode, which reads the schema pinned
+    /// *inside the payload tree* rather than from any ref: a payload carries
+    /// the schema it was written against, so a reader needs no registration of
+    /// its own and cannot silently read a payload under a schema it was not
+    /// written under. A payload labeled one kind but shaped like another is bad
+    /// data at a boundary this crate does not control, so it contributes
+    /// nothing rather than failing the query.
+    fn payload<T: for<'a> facet::Facet<'a>>(&self, claim: &Claim, payload_kind: &str) -> Option<T> {
+        if claim.envelope.payload_kind != payload_kind {
+            return None;
+        }
+        let segment = RefSegment::new(payload_kind).ok()?;
+        self.store
+            .kind::<T>(segment)
+            .decode(claim.envelope.payload.into())
+            .ok()
+    }
+
+    /// `verdict/2`'s column for `claim`: the `verdict` field of its review
+    /// payload, read dynamically because forge's review type is not a type this
+    /// crate has.
+    fn review_verdict(&self, claim: &Claim) -> Option<String> {
+        if claim.envelope.payload_kind != REVIEW_PAYLOAD_KIND {
+            return None;
+        }
+        let segment = RefSegment::new(REVIEW_PAYLOAD_KIND).ok()?;
+        let value = self
+            .store
+            .dynamic(segment)
+            .decode(claim.envelope.payload.into())
+            .ok()?;
+        Some(
+            value
+                .as_object()?
+                .get(VERDICT_FIELD)?
+                .as_string()?
+                .as_str()
+                .to_owned(),
+        )
+    }
+}
+
+/// The store kind name claims are written under -- `gix-attest`'s own, so the
+/// ref layout is read from the crate that defines it.
+fn claim_segment() -> RefSegment {
+    RefSegment::new(gix_attest::CLAIM_KIND).expect("gix-attest's claim kind is a valid ref segment")
+}
+
+/// One claim-attached two-place relation, and which part of a claim it reads.
+///
+/// Derived from the predicate key once, here, so the column's type is a fact
+/// about the *relation* rather than a guess from the shape of whatever value
+/// happened to be read -- the registry declares `kind: Symbol`, `target: Oid`,
+/// `signer: Member`, `verdict: Symbol` (`gix_query_ir::host_predicates`), and
+/// each arm below produces exactly its declared type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimRelation {
+    /// `kind/2` from [`Envelope::payload_kind`], `Symbol`-typed.
+    Kind,
+    /// `target/2` from [`Target::id`], `Oid`-typed.
+    Target,
+    /// `signer/2` from [`Envelope::key`], `Member`-typed: the id of the
+    /// key-add claim that published the signing key. The same oid wire shape
+    /// `member/1` reads, as before the re-backing.
+    Signer,
+    /// `verdict/2` from the review payload, `Symbol`-typed.
+    Verdict,
+}
+
+impl ClaimRelation {
     fn of(key: &PredicateKey) -> Option<Self> {
         if key.arity != 2 {
             return None;
@@ -64,105 +318,20 @@ impl TrailerRelation {
             "target" => Some(Self::Target),
             "signer" => Some(Self::Signer),
             "verdict" => Some(Self::Verdict),
-            "rev" => Some(Self::Rev),
-            "loc" => Some(Self::Loc),
             _ => None,
         }
     }
 
-    /// The commit-message trailer token this relation reads.
-    fn token(self) -> &'static str {
+    /// This relation's value for `claim`, or `None` when the claim has none --
+    /// which for `verdict/2` is every claim that is not a review.
+    fn value(self, reader: &ClaimReader<'_>, claim: &Claim) -> Option<Value> {
         match self {
-            Self::Kind => "Kind",
-            Self::Target => "Target",
-            Self::Signer => "Signer",
-            Self::Verdict => "Verdict",
-            Self::Rev => "Rev",
-            Self::Loc => "Loc",
+            Self::Kind => Some(Value::sym(claim.envelope.payload_kind.clone())),
+            Self::Target => Some(sym_oid(claim.envelope.target.id.into())),
+            Self::Signer => Some(sym_oid(claim.envelope.key.into())),
+            Self::Verdict => reader.review_verdict(claim).map(Value::sym),
         }
     }
-
-    /// Whether this relation's value column is declared `Oid`-, `Member`-,
-    /// or `Rev`-shaped, and should therefore be canonicalized through a hex
-    /// parse rather than passed through as a bare symbol.
-    fn is_oid_shaped(self) -> bool {
-        matches!(self, Self::Target | Self::Signer | Self::Rev)
-    }
-}
-
-/// Every claim ref's `(refname, claim oid)` pair, sorted by refname.
-fn claim_refs(
-    repo: &gix::Repository,
-    key: &PredicateKey,
-) -> Result<Vec<(String, ObjectId)>, HostError> {
-    let platform = repo.references().map_err(|error| backend(key, error))?;
-    let mut out = Vec::new();
-    for reference in platform
-        .prefixed(CLAIMS_PREFIX)
-        .map_err(|error| backend(key, error))?
-    {
-        let mut reference = reference.map_err(|error| backend_boxed(key, error))?;
-        let name = reference.name().as_bstr().to_string();
-        let id = reference
-            .peel_to_id()
-            .map_err(|error| backend(key, error))?
-            .detach();
-        out.push((name, id));
-    }
-    out.sort();
-    Ok(out)
-}
-
-/// `claim`'s own ref, by direct lookup rather than enumerating the whole
-/// namespace to find it.
-///
-/// A claim's identity *is* its ref's leaf (this module's own doc comment:
-/// "no separate mapping is kept"), so a bound claim never needs to scan
-/// every claim ref to confirm it exists -- `member.rs`'s `status` takes the
-/// same direct-lookup shape for a bound member. Without this, `target(+C,
-/// B)` inside the fixpoint reads every claim ref on every call, which is
-/// O(n) per call and O(n^2) over a query that revisits `C` for each
-/// candidate.
-fn claim_ref(
-    repo: &gix::Repository,
-    key: &PredicateKey,
-    claim: ObjectId,
-) -> Result<Option<String>, HostError> {
-    let refname = format!("{CLAIMS_PREFIX}{claim}");
-    let found = repo
-        .try_find_reference(&refname)
-        .map_err(|error| backend(key, error))?
-        .is_some();
-    Ok(found.then_some(refname))
-}
-
-/// Every value of trailer `token` on `claim`'s commit message, in message
-/// order.
-///
-/// `kind/2`, `target/2`, `signer/2`, and `verdict/2` are all-free relations,
-/// and git parses a repeated trailer token happily -- `git interpret-trailers
-/// --parse` reports every `Target:` line on a commit with two of them, not
-/// just the first. Stopping at the first match here would make `RepoFacts`
-/// disagree with that oracle and, worse, disagree silently: a rejection
-/// naming two blobs would leave the second unrejected, `blocked/1` would not
-/// fire for it, and the gate would admit a rejected blob. Emitting one fact
-/// per occurrence keeps this predicate's extension exactly what git itself
-/// says the trailer block contains.
-fn trailer_values(
-    repo: &gix::Repository,
-    key: &PredicateKey,
-    claim: ObjectId,
-    token: &str,
-) -> Result<Vec<String>, HostError> {
-    let Ok(commit) = repo.find_commit(claim) else {
-        return Ok(Vec::new());
-    };
-    let decoded = commit.decode().map_err(|error| backend(key, error))?;
-    Ok(decoded
-        .message_trailers()
-        .filter(|trailer| trailer.token.to_str().is_ok_and(|t| t == token))
-        .map(|trailer| trailer.value.to_string())
-        .collect())
 }
 
 pub(crate) fn claim_facts<'a>(
@@ -171,350 +340,365 @@ pub(crate) fn claim_facts<'a>(
     bound: Bindings<'_>,
     attribute: bool,
 ) -> Result<Facts<'a>, HostError> {
-    match bound.first() {
-        Some(Some(v)) => {
-            let claim = parse_oid(key, v)?;
-            let out: Vec<Result<Fact, HostError>> = match claim_ref(repo, key, claim)? {
-                Some(name) => vec![Ok(fact(vec![sym_oid(claim)], Some(&name), attribute))],
-                None => vec![],
-            };
-            Ok(Box::new(out.into_iter()))
-        }
-        _ => {
-            let out: Vec<_> = claim_refs(repo, key)?
-                .into_iter()
-                .map(|(name, id)| Ok(fact(vec![sym_oid(id)], Some(&name), attribute)))
-                .collect();
-            Ok(Box::new(out.into_iter()))
-        }
-    }
+    let reader = ClaimReader::open(repo, key);
+    let found = match bound.first() {
+        Some(Some(v)) => reader.one(parse_oid(key, v)?)?.into_iter().collect(),
+        _ => reader.all()?,
+    };
+    let out: Vec<Result<Fact, HostError>> = found
+        .into_iter()
+        .map(|(refname, claim)| Ok(fact(vec![sym_oid(claim.id)], Some(&refname), attribute)))
+        .collect();
+    Ok(Box::new(out.into_iter()))
 }
 
 /// `kind/2`, `target/2`, `signer/2`, and `verdict/2` share this shape: they
-/// differ only in which [`TrailerRelation`] `key` names, derived once here
-/// rather than threaded in by each caller in `facts.rs` as a separate string
-/// that could name a different token than `key` itself does.
-pub(crate) fn trailer_facts<'a>(
+/// differ only in which [`ClaimRelation`] `key` names, derived once here rather
+/// than threaded in by each caller in `facts.rs` as a separate label that could
+/// name a different field than `key` itself does.
+pub(crate) fn envelope_facts<'a>(
     repo: &'a gix::Repository,
     key: &PredicateKey,
     bound: Bindings<'_>,
     attribute: bool,
 ) -> Result<Facts<'a>, HostError> {
-    let relation = TrailerRelation::of(key).ok_or_else(|| HostError::NoProvider(key.clone()))?;
-    let want_claim = match bound.first() {
-        Some(Some(v)) => Some(parse_oid(key, v)?),
-        Some(None) | None => None,
-    };
+    let relation = ClaimRelation::of(key).ok_or_else(|| HostError::NoProvider(key.clone()))?;
     let want_value = match bound.get(1) {
         Some(Some(v)) => Some(v.clone()),
         Some(None) | None => None,
     };
-    let claims: Vec<(String, ObjectId)> = match want_claim {
-        Some(claim) => claim_ref(repo, key, claim)?
-            .into_iter()
-            .map(|name| (name, claim))
-            .collect(),
-        None => claim_refs(repo, key)?,
+    let reader = ClaimReader::open(repo, key);
+    let found: Vec<(String, Claim)> = match bound.first() {
+        Some(Some(v)) => reader.one(parse_oid(key, v)?)?.into_iter().collect(),
+        _ => reader.all()?,
     };
     let mut out = Vec::new();
-    for (name, claim) in claims {
-        for text in trailer_values(repo, key, claim, relation.token())? {
-            let value = if relation.is_oid_shaped() {
-                match ObjectId::from_hex(text.as_bytes()) {
-                    // Round-tripping through the parsed oid rather than the
-                    // raw trailer text keeps the emitted value canonical even
-                    // if the trailer was hand-written in a different case.
-                    Ok(oid) => sym_oid(oid),
-                    Err(_) => Value::sym(text),
-                }
-            } else {
-                Value::sym(text)
-            };
-            if want_value.as_ref().is_some_and(|want| want != &value) {
-                continue;
-            }
-            out.push(Ok(fact(
-                vec![sym_oid(claim), value],
-                Some(&name),
-                attribute,
-            )));
+    for (refname, claim) in found {
+        let Some(value) = relation.value(&reader, &claim) else {
+            continue;
+        };
+        if want_value.as_ref().is_some_and(|want| want != &value) {
+            continue;
         }
+        out.push(Ok(fact(
+            vec![sym_oid(claim.id), value],
+            Some(&refname),
+            attribute,
+        )));
     }
     Ok(Box::new(out.into_iter()))
 }
 
-/// Every `Loc:` trailer value on a `rebind-pin` claim naming `anchor` and
-/// pinned exactly at `rev` -- `cand`'s pin leg (ARCHITECTURE.md: "pin
-/// dominates the lattice"), at confidence 1.0 by construction wherever this
-/// returns a non-empty list.
+/// Every location a verified `rebind-pin` claim pins `anchor` to at `rev` --
+/// `cand`'s pin leg (ARCHITECTURE.md: "pin dominates the lattice"), at
+/// confidence 1.0 by construction wherever this returns a non-empty list.
 ///
-/// No signature is checked here: `git-attest`'s envelope and crypto (DELTA
-/// X1) do not exist yet, so a `rebind-pin` claim on `refs/meta/claims/*` is
-/// trusted verbatim, exactly as `signer`/`verdict` already are. Once
-/// `git-attest` exists, this is the one place that needs to start asking it
-/// to verify the claim before trusting its trailers.
+/// This is the composition point the architecture names: "anchor vocabulary in
+/// claims is a store schema registered by anchor, composed only in query." The
+/// envelope is attest's, the [`RebindPin`] payload schema is anchor's, and
+/// neither crate knows the other exists -- the join happens here and nowhere
+/// else. The `Loc` term is assembled from the payload's own `path` and `span`
+/// fields, formatted exactly as `cand/5`'s third column
+/// (`"<path>:<start>-<end>"`), so a pin and an oracle candidate are the same
+/// shape of value.
+///
+/// A claim whose signature does not verify pins nothing: verification happens
+/// before the payload is read, so a forged pin cannot dominate the lattice.
 pub(crate) fn rebind_pin_locs(
     repo: &gix::Repository,
     key: &PredicateKey,
     anchor: ObjectId,
     rev: ObjectId,
 ) -> Result<Vec<String>, HostError> {
-    let anchor_hex = anchor.to_string();
-    let rev_hex = rev.to_string();
+    let reader = ClaimReader::open(repo, key);
+    let target = Target {
+        kind: ANCHOR_TARGET_KIND.to_owned(),
+        id: anchor.into(),
+    };
+    let chain = reader
+        .claims()
+        .resolve(&target)
+        .map_err(|e| backend_msg(key, format!("reading claims about anchor {anchor}: {e}")))?;
     let mut out = Vec::new();
-    for (_, claim) in claim_refs(repo, key)? {
-        if !trailer_values(repo, key, claim, "Kind")?
-            .iter()
-            .any(|v| v == "rebind-pin")
-        {
+    for claim in chain {
+        if !reader.verified(&claim)? {
             continue;
         }
-        if !trailer_values(repo, key, claim, "Target")?
-            .iter()
-            .any(|v| v == &anchor_hex)
-        {
+        let Some(pin) = reader.payload::<RebindPin>(&claim, REBIND_PIN_KIND) else {
+            continue;
+        };
+        if ObjectId::from(pin.rev) != rev {
             continue;
         }
-        if !trailer_values(repo, key, claim, "Rev")?
-            .iter()
-            .any(|v| v == &rev_hex)
-        {
-            continue;
-        }
-        out.extend(trailer_values(repo, key, claim, "Loc")?);
+        let (start, end) = pin.span;
+        out.push(format!("{}:{start}-{end}", pin.path));
     }
     Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
+    use facet::Facet;
+
     use super::*;
-    use test_support::Fixture;
+    use test_support::{ClaimFixture, Fixture};
 
-    /// A bound claim is answered by a direct ref lookup rather than a scan
-    /// over the whole claims namespace -- with two claims present, binding
-    /// one must return only its own fact, and an unregistered claim oid must
-    /// answer empty rather than erroring, exactly like `member.rs`'s
-    /// `unknown_member_is_false_not_an_error`.
-    #[test]
-    fn a_bound_claim_is_a_direct_lookup() {
+    /// Forge's review payload, stood in for by its shape: `verdict/2` reads the
+    /// `verdict` field of whatever document a `review` payload decodes to, and
+    /// this is the smallest document with that field. When forge registers the
+    /// real schema, this fixture type is what it replaces.
+    #[derive(Debug, Facet)]
+    struct Review {
+        verdict: String,
+    }
+
+    struct Repo {
+        _dir: tempfile::TempDir,
+        f: Fixture,
+        claims: ClaimFixture,
+    }
+
+    fn repo() -> Repo {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = Fixture::init(dir.path().join("r"));
-        let blob = f.commit_file("a.txt", "a\n", "first");
-        let signer = f.hash_object("Alice <alice@example.com>");
-        let one = claim(&f, &blob, &signer, "approve");
-        let two = claim(&f, &blob, &signer, "reject");
-        let repo = f.open();
-        let key = PredicateKey::new("claim", 1);
+        f.commit_file("a.txt", "a\n", "first");
+        let claims = ClaimFixture::new(&f);
+        claims.register_payload_schema::<Review>(REVIEW_PAYLOAD_KIND);
+        Repo {
+            _dir: dir,
+            f,
+            claims,
+        }
+    }
 
-        let out: Vec<_> = claim_facts(&repo, &key, &[Some(Value::sym(one.as_str()))], false)
+    fn blob_target(f: &Fixture, path: &str) -> Target {
+        let blob = f.blob_at("HEAD", path);
+        Target {
+            kind: "blob".to_owned(),
+            id: ObjectId::from_hex(blob.as_bytes())
+                .expect("hex blob")
+                .into(),
+        }
+    }
+
+    /// A review claim about `target` with verdict `verdict`.
+    fn review(r: &Repo, target: &Target, verdict: &str) -> ObjectId {
+        let payload = r.claims.payload(
+            REVIEW_PAYLOAD_KIND,
+            &Review {
+                verdict: verdict.to_owned(),
+            },
+        );
+        r.claims.sign(target, payload, REVIEW_PAYLOAD_KIND)
+    }
+
+    fn facts_of(repo: &gix::Repository, name: &str, bound: &[Option<Value>]) -> Vec<Vec<Value>> {
+        let key = PredicateKey::new(name, bound.len());
+        let facts = if bound.len() == 1 {
+            claim_facts(repo, &key, bound, false)
+        } else {
+            envelope_facts(repo, &key, bound, false)
+        };
+        facts
             .expect("facts")
             .collect::<Result<Vec<_>, _>>()
-            .expect("ok");
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].values[0], Value::sym(one.as_str()));
+            .expect("ok")
+            .into_iter()
+            .map(|f| f.values)
+            .collect()
+    }
 
+    /// Every column of every claim relation, on one signed review claim.
+    #[test]
+    fn a_signed_claims_envelope_populates_the_four_two_place_relations() {
+        let r = repo();
+        let target = blob_target(&r.f, "a.txt");
+        let id = review(&r, &target, "approve");
+        let repo = r.f.open();
+
+        assert_eq!(
+            facts_of(&repo, "claim", &[None]),
+            vec![vec![sym_oid(id)]],
+            "the key-add claim contributes nothing: a chain root has no \
+             predecessor to verify against"
+        );
+        assert_eq!(
+            facts_of(&repo, "kind", &[Some(sym_oid(id)), None]),
+            vec![vec![sym_oid(id), Value::sym(REVIEW_PAYLOAD_KIND)]],
+            "kind/2 is the envelope's payload_kind"
+        );
+        assert_eq!(
+            facts_of(&repo, "target", &[Some(sym_oid(id)), None]),
+            vec![vec![sym_oid(id), sym_oid(target.id.into())]],
+            "target/2 is the target's id; its kind label is not a column"
+        );
+        assert_eq!(
+            facts_of(&repo, "signer", &[Some(sym_oid(id)), None]),
+            vec![vec![sym_oid(id), sym_oid(r.claims.key_claim())]],
+            "signer/2 is the key-add claim id, Member-shaped as before"
+        );
+        assert_eq!(
+            facts_of(&repo, "verdict", &[Some(sym_oid(id)), None]),
+            vec![vec![sym_oid(id), Value::sym("approve")]],
+            "verdict/2 is read out of the review payload, not the envelope"
+        );
+    }
+
+    /// A bound claim is answered from its own chain, and an oid that is not a
+    /// claim answers empty rather than erroring -- the same lenience
+    /// `member.rs`'s `unknown_member_is_false_not_an_error` has.
+    #[test]
+    fn a_bound_claim_reads_its_own_chain_and_a_stranger_answers_empty() {
+        let r = repo();
+        let target = blob_target(&r.f, "a.txt");
+        let one = review(&r, &target, "approve");
+        let two = review(&r, &target, "reject");
         assert_ne!(one, two, "setup: the two claims must be distinct");
+        let repo = r.f.open();
 
-        let stranger = f.hash_object("not a claim");
-        let out = claim_facts(&repo, &key, &[Some(Value::sym(stranger))], false)
-            .expect("facts")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("ok");
-        assert!(out.is_empty());
-
-        let verdict: Vec<_> = trailer_facts(
-            &repo,
-            &PredicateKey::new("verdict", 2),
-            &[Some(Value::sym(one.as_str())), None],
-            false,
-        )
-        .expect("facts")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("ok");
-        assert_eq!(verdict.len(), 1);
-        assert_eq!(verdict[0].values[1], Value::sym("approve"));
-    }
-
-    /// Commit a claim with the four trailers `claim.rs` reads, and point
-    /// `refs/meta/claims/<message-derived-name>` at it. Returns the claim's
-    /// oid.
-    fn claim(f: &Fixture, target: &str, signer: &str, verdict: &str) -> String {
-        let message = format!(
-            "review\n\nKind: review\nTarget: {target}\nSigner: {signer}\nVerdict: {verdict}\n"
-        );
-        let id = f.commit(&message);
-        f.update_ref(&format!("{CLAIMS_PREFIX}{id}"), &id);
-        id
-    }
-
-    #[test]
-    fn a_claims_trailers_populate_the_four_two_place_relations() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let f = Fixture::init(dir.path().join("r"));
-        let blob = f.commit_file("a.txt", "a\n", "first");
-        let signer = f.hash_object("Alice <alice@example.com>");
-        let id = claim(&f, &blob, &signer, "approve");
-        let repo = f.open();
-
-        let kind: Vec<_> = trailer_facts(
-            &repo,
-            &PredicateKey::new("kind", 2),
-            &[Some(Value::sym(id.as_str())), None],
-            false,
-        )
-        .expect("facts")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("ok");
-        assert_eq!(kind[0].values[1], Value::sym("review"));
-
-        let target: Vec<_> = trailer_facts(
-            &repo,
-            &PredicateKey::new("target", 2),
-            &[Some(Value::sym(id.as_str())), None],
-            false,
-        )
-        .expect("facts")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("ok");
-        assert_eq!(target[0].values[1], Value::sym(blob.as_str()));
-
-        let verdict: Vec<_> = trailer_facts(
-            &repo,
-            &PredicateKey::new("verdict", 2),
-            &[Some(Value::sym(id.as_str())), Some(Value::sym("approve"))],
-            false,
-        )
-        .expect("facts")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("ok");
-        assert_eq!(verdict.len(), 1);
-
-        let claims: Vec<_> = claim_facts(&repo, &PredicateKey::new("claim", 1), &[None], false)
-            .expect("facts")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("ok");
-        assert_eq!(claims.len(), 1);
-        assert_eq!(claims[0].values[0], Value::sym(id.as_str()));
-    }
-
-    /// A rejection naming two blobs -- two `Target:` trailers on one claim --
-    /// must produce two `target/2` tuples, or `rejected(B) :- review(C),
-    /// target(C,B), verdict(C,reject), ...` leaves the second blob
-    /// unrejected and a gate admits it. `git interpret-trailers --parse` is
-    /// the oracle: it is asked to parse the exact same message text, and
-    /// this test asserts `RepoFacts` reports exactly what git reports,
-    /// rather than trusting our own reading of "trailer".
-    #[test]
-    fn repeated_trailers_are_all_emitted_not_just_the_first() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let f = Fixture::init(dir.path().join("r"));
-        let blob_a = f.commit_file("a.txt", "a\n", "first");
-        let blob_b = f.hash_object("b");
-        let signer = f.hash_object("Alice <alice@example.com>");
-        let message = format!(
-            "review\n\nKind: review\nTarget: {blob_a}\nTarget: {blob_b}\nSigner: {signer}\nVerdict: reject\n"
-        );
-        let id = f.commit(&message);
-        f.update_ref(&format!("{CLAIMS_PREFIX}{id}"), &id);
-        let repo = f.open();
-
-        let target: Vec<_> = trailer_facts(
-            &repo,
-            &PredicateKey::new("target", 2),
-            &[Some(Value::sym(id.as_str())), None],
-            false,
-        )
-        .expect("facts")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("ok");
-
-        let scratch = dir.path().join("message.txt");
-        std::fs::write(&scratch, &message).expect("write scratch message");
-        let git_out = f.git(&[
-            "interpret-trailers",
-            "--parse",
-            scratch.to_str().expect("utf-8 scratch path"),
-        ]);
-        let git_targets: Vec<&str> = git_out
-            .lines()
-            .filter_map(|l| l.strip_prefix("Target: "))
-            .collect();
-
+        assert_eq!(facts_of(&repo, "claim", &[Some(sym_oid(one))]).len(), 1);
         assert_eq!(
-            git_targets.len(),
+            facts_of(&repo, "claim", &[None]).len(),
             2,
-            "setup: git itself must see two Target: trailers"
+            "both claims on the one chain are enumerated"
+        );
+
+        let stranger = r.f.hash_object("not a claim");
+        assert!(
+            facts_of(&repo, "claim", &[Some(Value::sym(stranger))]).is_empty(),
+            "an oid that is not a claim commit is no such claim, not an error"
+        );
+    }
+
+    /// The whole point of moving verification to fact-derivation time: a claim
+    /// whose commit bytes were tampered with after signing contributes nothing,
+    /// so no rule can join on it. The tampering is done with `git hash-object`,
+    /// so the forgery is real objects in the repository rather than a mocked
+    /// verdict.
+    #[test]
+    fn a_tampered_claim_contributes_no_facts_at_all() {
+        let r = repo();
+        let target = blob_target(&r.f, "a.txt");
+        let id = review(&r, &target, "approve");
+
+        let raw = r.f.git(&["cat-file", "commit", &id.to_string()]);
+        let flipped = raw.replace("claim review", "claim REVIEW");
+        assert_ne!(raw, flipped, "setup: the summary must have been rewritten");
+        let tampered = r.f.hash_commit(&flipped);
+        // Point the chain at the forgery: same tree, same signature, different
+        // bytes.
+        let refname = r.claims.reference(&target);
+        r.f.update_ref(&refname, &tampered.to_string());
+
+        let repo = r.f.open();
+        assert!(
+            facts_of(&repo, "claim", &[None]).is_empty(),
+            "a tampered claim is not a claim"
+        );
+        assert!(
+            facts_of(&repo, "verdict", &[None]).is_empty(),
+            "and it contributes no payload fact either"
+        );
+        assert!(
+            !r.f.git_ok(&["verify-commit", &tampered.to_string()]),
+            "the oracle agrees: stock git rejects the forgery too"
+        );
+    }
+
+    /// A revocation is a claim like any other, and says what it revokes in the
+    /// rule language: `kind(R, revocation), target(R, C)`. No `revoked_claim/1`
+    /// predicate is needed, and none exists.
+    #[test]
+    fn a_revocation_is_readable_as_an_ordinary_claim_about_a_claim() {
+        let r = repo();
+        let target = blob_target(&r.f, "a.txt");
+        let id = review(&r, &target, "approve");
+        let revocation = r.claims.revoke(id);
+        let repo = r.f.open();
+
+        assert_eq!(
+            facts_of(&repo, "kind", &[Some(sym_oid(revocation)), None]),
+            vec![vec![sym_oid(revocation), Value::sym(REVOCATION_KIND)]]
         );
         assert_eq!(
-            target.len(),
-            git_targets.len(),
-            "RepoFacts must report exactly as many target/2 tuples as git \
-             interpret-trailers reports Target: trailers"
+            facts_of(&repo, "target", &[Some(sym_oid(revocation)), None]),
+            vec![vec![sym_oid(revocation), sym_oid(id)]],
+            "the revocation's target is the claim it revokes"
         );
-        let ours: std::collections::BTreeSet<_> =
-            target.iter().map(|f| f.values[1].clone()).collect();
-        assert!(ours.contains(&Value::sym(blob_a.as_str())));
-        assert!(ours.contains(&Value::sym(blob_b.as_str())));
+        assert_eq!(
+            facts_of(&repo, "claim", &[None]).len(),
+            2,
+            "the revoked claim is marked, not deleted: it is still a claim"
+        );
     }
 
-    /// The column type is declared per relation, not guessed from a value's
-    /// shape: a `Kind:` trailer that happens to look like 40 hex characters
-    /// must come back byte-for-byte rather than being round-tripped through
-    /// an oid parse, because `kind/2` is `Symbol`-typed regardless of what
-    /// any particular value looks like.
+    /// `verdict/2` is payload-backed, so a claim of another payload kind has no
+    /// verdict -- the relation is empty rather than defaulted.
     #[test]
-    fn symbol_typed_columns_are_never_treated_as_oids_even_if_hex_shaped() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let f = Fixture::init(dir.path().join("r"));
-        let blob = f.commit_file("a.txt", "a\n", "first");
-        let signer = f.hash_object("Alice <alice@example.com>");
-        let hex_looking = "a".repeat(40);
-        let message = format!(
-            "review\n\nKind: {hex_looking}\nTarget: {blob}\nSigner: {signer}\nVerdict: {hex_looking}\n"
+    fn a_non_review_claim_has_no_verdict() {
+        let r = repo();
+        let target = blob_target(&r.f, "a.txt");
+        let payload = r.claims.payload(
+            REVIEW_PAYLOAD_KIND,
+            &Review {
+                verdict: "approve".to_owned(),
+            },
         );
-        let id = f.commit(&message);
-        f.update_ref(&format!("{CLAIMS_PREFIX}{id}"), &id);
-        let repo = f.open();
+        let id = r.claims.sign(&target, payload, "something-else");
+        let repo = r.f.open();
 
-        let kind: Vec<_> = trailer_facts(
-            &repo,
-            &PredicateKey::new("kind", 2),
-            &[Some(Value::sym(id.as_str())), None],
-            false,
-        )
-        .expect("facts")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("ok");
-        assert_eq!(kind[0].values[1], Value::sym(hex_looking.as_str()));
+        assert_eq!(facts_of(&repo, "kind", &[Some(sym_oid(id)), None]).len(), 1);
+        assert!(
+            facts_of(&repo, "verdict", &[Some(sym_oid(id)), None]).is_empty(),
+            "a verdict is review vocabulary, not something every claim has"
+        );
     }
 
-    /// The bound-path manifestation finding 7 names directly: a `Signer:`
-    /// trailer written as a bare email is not oid-shaped, so it falls
-    /// through as a plain symbol rather than being silently dropped -- the
-    /// fact still exists, ready for `member(+M)` to answer "no such member"
-    /// on it (`member.rs`'s own lenient bound-path parsing).
+    /// The pin leg: a signed `rebind-pin` claim on an anchor target is read
+    /// back through anchor's own schema, at the rev it names and no other.
     #[test]
-    fn signer_written_as_an_email_still_produces_a_fact() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let f = Fixture::init(dir.path().join("r"));
-        let blob = f.commit_file("a.txt", "a\n", "first");
-        let message = format!(
-            "review\n\nKind: review\nTarget: {blob}\nSigner: alice@example.com\nVerdict: approve\n"
-        );
-        let id = f.commit(&message);
-        f.update_ref(&format!("{CLAIMS_PREFIX}{id}"), &id);
-        let repo = f.open();
+    fn a_signed_rebind_pin_is_read_back_through_anchors_schema() {
+        let r = repo();
+        r.claims
+            .register_payload_schema::<RebindPin>(REBIND_PIN_KIND);
+        let head = r.f.rev_parse("HEAD");
+        let rev = ObjectId::from_hex(head.as_bytes()).expect("hex rev");
+        let anchor = ObjectId::from_hex(r.f.hash_object("an anchor").as_bytes()).expect("hex");
 
-        let signer: Vec<_> = trailer_facts(
-            &repo,
-            &PredicateKey::new("signer", 2),
-            &[Some(Value::sym(id.as_str())), None],
-            false,
-        )
-        .expect("facts")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("ok");
-        assert_eq!(signer[0].values[1], Value::sym("alice@example.com"));
+        let pin = RebindPin {
+            rev: rev.into(),
+            path: "src/refdb/store.rs".to_owned(),
+            span: (118, 568),
+        };
+        let payload = r.claims.payload(REBIND_PIN_KIND, &pin);
+        r.claims.sign(
+            &Target {
+                kind: ANCHOR_TARGET_KIND.to_owned(),
+                id: anchor.into(),
+            },
+            payload,
+            REBIND_PIN_KIND,
+        );
+
+        let repo = r.f.open();
+        let key = PredicateKey::new("cand", 5);
+        assert_eq!(
+            rebind_pin_locs(&repo, &key, anchor, rev).expect("pins"),
+            vec!["src/refdb/store.rs:118-568".to_owned()],
+        );
+
+        let other = ObjectId::null(gix::hash::Kind::Sha1);
+        assert!(
+            rebind_pin_locs(&repo, &key, anchor, other)
+                .expect("pins")
+                .is_empty(),
+            "a pin is pinned at one rev"
+        );
+        assert!(
+            rebind_pin_locs(&repo, &key, other, rev)
+                .expect("pins")
+                .is_empty(),
+            "and about one anchor"
+        );
     }
 }

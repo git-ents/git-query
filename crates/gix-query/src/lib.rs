@@ -105,7 +105,7 @@ pub struct EffectUnderCheck {
 /// Why a set of effects failed [`check_effect_acyclicity`].
 ///
 /// A cycle names the namespace, because "you have a fork bomb" is not
-/// actionable and "effect `a` writes `refs/meta/claims/*`, which effect `b`
+/// actionable and "effect `a` writes `refs/claims/*`, which effect `b`
 /// reads" is.
 #[derive(Debug, thiserror::Error)]
 pub enum EffectCheckError {

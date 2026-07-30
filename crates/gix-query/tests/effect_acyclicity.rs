@@ -30,15 +30,12 @@ fn effect(name: &str, writes: &[&str], bodies: &[&str]) -> EffectUnderCheck {
 /// The point of the whole exercise: an effect that writes into the namespace
 /// its own trigger body reads is a fork bomb, however its declaration is
 /// written. `signer/2` is claim-backed, so the body's footprint is
-/// `refs/meta/claims/*`, and a write under that prefix closes the loop.
+/// `refs/claims/*` -- and countersigning *writes* a claim, which is exactly
+/// what closes the loop.
 #[test]
 fn an_effect_reading_its_own_write_set_is_rejected_naming_the_namespace() {
     let checked = empty_program();
-    let effects = vec![effect(
-        "countersign",
-        &["refs/meta/claims/action/countersign/*"],
-        &["signer(C, M)"],
-    )];
+    let effects = vec![effect("countersign", &["refs/claims/*"], &["signer(C, M)"])];
 
     let errors = check_effect_acyclicity(&checked, &effects).expect_err("a self cycle");
     assert_eq!(errors.len(), 1, "{errors:?}");
@@ -50,13 +47,11 @@ fn an_effect_reading_its_own_write_set_is_rejected_naming_the_namespace() {
         } => {
             assert_eq!(&**from, "countersign");
             assert_eq!(&**to, "countersign");
-            assert_eq!(namespace.as_str(), "refs/meta/claims/action/countersign/*");
+            assert_eq!(namespace.as_str(), "refs/claims/*");
             // The rendered diagnostic names it too -- a caller printing the
             // error should not have to reach into the fields.
             assert!(
-                errors[0]
-                    .to_string()
-                    .contains("refs/meta/claims/action/countersign/*"),
+                errors[0].to_string().contains("refs/claims/*"),
                 "{}",
                 errors[0]
             );
@@ -71,11 +66,7 @@ fn an_effect_reading_its_own_write_set_is_rejected_naming_the_namespace() {
 fn a_chain_that_terminates_is_accepted() {
     let checked = empty_program();
     let effects = vec![
-        effect(
-            "build_on_push",
-            &["refs/meta/claims/action/kiln/*"],
-            &["member(M)"],
-        ),
+        effect("build_on_push", &["refs/claims/*"], &["member(M)"]),
         effect(
             "release_on_green",
             &["refs/release/candidate"],
@@ -87,8 +78,8 @@ fn a_chain_that_terminates_is_accepted() {
 
 /// An effect whose footprint overlaps nobody's write set -- including its own
 /// -- is accepted. The declared read set here overlaps nothing either, but
-/// that is a coincidence: what makes this pass is that `refs/meta/claims/*`
-/// and `refs/release/candidate` do not overlap.
+/// that is a coincidence: what makes this pass is that `refs/claims/*` and
+/// `refs/release/candidate` do not overlap.
 #[test]
 fn a_footprint_overlapping_no_write_set_is_accepted() {
     let checked = empty_program();

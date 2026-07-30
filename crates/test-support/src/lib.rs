@@ -9,6 +9,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod claim;
+
+pub use claim::ClaimFixture;
+
 /// Initialize a git repository at `path` with a committer identity configured,
 /// so `gix::Repository::commit` has an author and committer to record.
 pub fn init_repo(path: &Path) {
@@ -127,6 +131,42 @@ impl Fixture {
     /// the fixtures that matter here live outside `refs/heads`.
     pub fn update_ref(&self, refname: &str, target: &str) {
         self.git(&["update-ref", refname, target]);
+    }
+
+    /// Run `git` in the fixture and report only whether it succeeded.
+    ///
+    /// For the commands whose *failure* is the assertion -- `git
+    /// verify-commit` on a forgery -- where [`Fixture::git`]'s panic-on-failure
+    /// is exactly the wrong behavior.
+    pub fn git_ok(&self, args: &[&str]) -> bool {
+        Command::new("git")
+            .args(args)
+            .current_dir(&self.root)
+            .output()
+            .unwrap_or_else(|e| panic!("run git {args:?}: {e}"))
+            .status
+            .success()
+    }
+
+    /// Store `text` as a loose commit object verbatim and return its oid.
+    ///
+    /// The bytes are written unaltered, which is what makes a tampered-commit
+    /// fixture real: `git hash-object -t commit` stores whatever it is handed,
+    /// so a signature that no longer covers those bytes is a genuine forgery in
+    /// the object database rather than a mocked verification failure.
+    pub fn hash_commit(&self, text: &str) -> gix::ObjectId {
+        let path = self.root.join(".git-fixture-commit");
+        std::fs::write(&path, text).expect("write scratch commit");
+        let oid = self.git(&[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--",
+            path.to_str().expect("utf-8 scratch path"),
+        ]);
+        std::fs::remove_file(&path).expect("remove scratch");
+        gix::ObjectId::from_hex(oid.as_bytes()).expect("git returned a hex oid")
     }
 
     /// Store `contents` as a loose blob and return its oid.

@@ -547,7 +547,7 @@ fn edb(
 pub fn host_predicates() -> Vec<PredicateEntry> {
     use Backing::{ContentAddressed, RefGlob};
     use Mode::{Bound, Free};
-    use ValueType::{Int, Location, Member, Oid, Path, Rev, Symbol};
+    use ValueType::{Int, Member, Oid, Path, Rev, Symbol};
 
     // Enumerate the namespace, or test one identity. Both affordable, so both
     // legal -- which is the whole reason an EDB predicate carries a mode set.
@@ -562,7 +562,9 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
     // Content-addressed, so never enumerable: the subject must be bound.
     let keyed2 = ModeSet::new([ModeVector::new(vec![Bound, Free]), ModeVector::all_bound(2)]);
 
-    let claims = || vec![RefGlob("refs/meta/claims/*".into())];
+    // `gix-attest`'s layout: one ref per target key, claims chained as commits
+    // on it. A single star matches, because a target key is one component.
+    let claims = || vec![RefGlob("refs/claims/*".into())];
     let members = || vec![RefGlob("refs/meta/members/*".into())];
 
     vec![
@@ -652,9 +654,13 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
         edb(
             "verdict",
             &[Oid, Symbol],
-            enumerable_or_test2.clone(),
+            enumerable_or_test2,
             claims(),
-            "the claim's verdict",
+            // Payload vocabulary, not envelope machinery: the column is a
+            // field of a `review` payload, read through the schema that
+            // travels with it, and a claim of any other payload kind has no
+            // verdict at all.
+            "the verdict a review claim's payload carries",
         ),
         edb(
             "anchor",
@@ -664,20 +670,6 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
             // so a single-star pattern matches every anchor.
             vec![RefGlob("refs/anchors/*".into())],
             "an immutable identity whose location is derived",
-        ),
-        edb(
-            "rev",
-            &[Oid, Rev],
-            enumerable_or_test2.clone(),
-            claims(),
-            "a rebind-pin claim's pinned revision",
-        ),
-        edb(
-            "loc",
-            &[Oid, Location],
-            enumerable_or_test2,
-            claims(),
-            "a rebind-pin claim's pinned location, \"<path>:<start>-<end>\"",
         ),
         edb(
             "line",
@@ -743,6 +735,37 @@ pub fn builtins() -> Vec<BuiltinEntry> {
         gate_safe: true,
         doc: "every candidate location an anchor might sit at on a revision: pin and the oracle chain, unselected",
     }];
+
+    // `key_valid_at(+Claim)`: was the signing key valid at the op-log position
+    // where the claim was admitted (ARCHITECTURE.md, "git-attest": "a claim is
+    // valid iff its signing key was valid at the op-log position where the
+    // claim was admitted").
+    //
+    // Backed by op-log admission order, which no ref in the product family
+    // holds yet (DELTA X6). It is declared now, with its real signature and its
+    // real backing named, because validity is a *rule's* concern and a rule
+    // cannot be written against a predicate that does not exist -- the review
+    // vocabulary's `reviewed/1` needs it in its body today. Its interim
+    // implementation is `gix-query-host`'s absent-safe marker, the same shape
+    // as `cand`'s `op_log(None, ...)` leg, and the gap is documented at that
+    // one call site rather than restated here.
+    //
+    // A builtin rather than an EDB relation because it is not enumerable in
+    // either direction: there is no finite set of "valid claims" to read, only
+    // a question asked of a claim already in hand. That also keeps the op-log's
+    // absence out of the cache key's `RefGlob` table, where a namespace that
+    // does not exist would be a lie rather than a gap.
+    out.push(BuiltinEntry {
+        key: PredicateKey::new("key_valid_at", 1),
+        types: vec![Exact(Oid)],
+        modes: ModeVector::all_bound(1),
+        props: BuiltinProps::filter(),
+        // Admission order is a property of the op-log, which is authoritative,
+        // append-only, and server-written -- not of ambient state -- so asking
+        // this question inside a gate is safe by the same argument `cand` is.
+        gate_safe: true,
+        doc: "the claim's signing key was valid at the op-log position where the claim was admitted",
+    });
 
     for op in CompareOp::all() {
         let types = if op.is_ordering() {
@@ -899,6 +922,37 @@ mod tests {
         );
     }
 
+    /// `key_valid_at` is a required-bound, non-minting filter over a claim --
+    /// the signature ARCHITECTURE.md gives it. Its backing (op-log admission
+    /// order) does not exist yet, and the shape of the declaration is what has
+    /// to survive its arrival unchanged.
+    #[test]
+    fn key_valid_at_is_a_bound_filter_over_a_claim() {
+        let r = Registry::host();
+        let e = r
+            .builtin(&PredicateKey::new("key_valid_at", 1))
+            .expect("key_valid_at");
+        assert_eq!(e.modes, ModeVector::all_bound(1));
+        assert_eq!(e.types, vec![ArgType::Exact(ValueType::Oid)]);
+        assert!(!e.props.mints, "a filter mints nothing");
+        assert!(e.gate_safe, "a merge gate is its first caller");
+    }
+
+    /// The retired interim relations: the rebind-pin fields claim trailers used
+    /// to carry are payload fields now, read by `cand`'s pin leg through
+    /// anchor's own schema, and nothing in the rule language should be able to
+    /// reach a half-parsed version of them.
+    #[test]
+    fn the_trailer_carried_rebind_fields_are_gone() {
+        let r = Registry::host();
+        for name in ["rev", "loc"] {
+            assert!(
+                r.predicate(&PredicateKey::new(name, 2)).is_none(),
+                "{name}/2 was a trailer-era interim relation and is retired"
+            );
+        }
+    }
+
     /// `bind/5` is pre-declared, `pub`, and derived -- never a builtin --
     /// exactly the shape `gix-query-rules`'s always-assembled core module
     /// needs to define it unqualified.
@@ -919,10 +973,8 @@ mod tests {
         let e = r
             .predicate(&PredicateKey::new("verdict", 2))
             .expect("verdict");
-        assert_eq!(
-            e.ref_globs().collect::<Vec<_>>(),
-            vec!["refs/meta/claims/*"]
-        );
+        // `gix-attest`'s layout, not the retired interim `refs/meta/claims/*`.
+        assert_eq!(e.ref_globs().collect::<Vec<_>>(), vec!["refs/claims/*"]);
         // And a content-addressed one contributes nothing, because its oid is
         // already in the goal.
         let e = r

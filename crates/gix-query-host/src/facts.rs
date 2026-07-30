@@ -26,8 +26,6 @@ const PROVIDED: &[(&str, usize)] = &[
     ("target", 2),
     ("signer", 2),
     ("verdict", 2),
-    ("rev", 2),
-    ("loc", 2),
     ("anchor", 1),
     ("line", 2),
 ];
@@ -67,12 +65,9 @@ impl FactSource for RepoFacts<'_> {
             ("member", 1) => member::member_facts(self.repo, key, bound, attribute),
             ("revoked", 1) => member::revoked_facts(self.repo, key, bound, attribute),
             ("claim", 1) => claim::claim_facts(self.repo, key, bound, attribute),
-            ("kind", 2)
-            | ("target", 2)
-            | ("signer", 2)
-            | ("verdict", 2)
-            | ("rev", 2)
-            | ("loc", 2) => claim::trailer_facts(self.repo, key, bound, attribute),
+            ("kind", 2) | ("target", 2) | ("signer", 2) | ("verdict", 2) => {
+                claim::envelope_facts(self.repo, key, bound, attribute)
+            }
             ("anchor", 1) => anchor::facts(self.repo, key, bound, attribute),
             ("line", 2) => line::facts(self.repo, key, bound, attribute),
             _ => Err(HostError::NoProvider(key.clone())),
@@ -83,8 +78,18 @@ impl FactSource for RepoFacts<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use facet::Facet;
+    use gix_attest::Target;
     use gix_query_ir::{Backing, PredicateClass, Value, host_predicates};
-    use test_support::Fixture;
+    use test_support::{ClaimFixture, Fixture};
+
+    /// Forge's review payload, stood in for by the one field `verdict/2`
+    /// reads. See `claim.rs`'s own test module: the schema is derived from this
+    /// shape, never transcribed.
+    #[derive(Debug, Facet)]
+    struct Review {
+        verdict: String,
+    }
 
     /// The mode vector requiring the fewest bound arguments among those the
     /// entry's `Edb` mode set supports -- the cheapest legal call, and the
@@ -178,22 +183,32 @@ mod tests {
             &revoked_target,
         );
 
-        let claim_message =
-            format!("review\n\nKind: review\nTarget: {blob}\nSigner: {member}\nVerdict: approve\n");
-        let claim_id = f.commit(&claim_message);
-        f.update_ref(&format!("refs/meta/claims/{claim_id}"), &claim_id);
+        // One real, signed claim, so every claim-backed relation -- including
+        // `verdict/2`, which reads the review payload rather than the envelope
+        // -- has at least one row to attribute.
+        let claims = ClaimFixture::new(&f);
+        claims.register_payload_schema::<Review>("review");
+        let payload = claims.payload(
+            "review",
+            &Review {
+                verdict: "approve".to_owned(),
+            },
+        );
+        claims.sign(
+            &Target {
+                kind: "blob".to_owned(),
+                id: gix::ObjectId::from_hex(blob.as_bytes())
+                    .expect("hex blob")
+                    .into(),
+            },
+            payload,
+            "review",
+        );
 
         let repo = f.open();
         let anchor = gix_anchor::capture(&repo, "HEAD", "a.txt", None).expect("capture");
-        let anchor_id = crate::anchor::attach(&repo, anchor).expect("attach anchor");
-
-        // A `rebind-pin` claim, so `rev/2` and `loc/2` both have at least
-        // one matching row too.
-        let pin_message = format!(
-            "rebind\n\nKind: rebind-pin\nTarget: {anchor_id}\nRev: {head}\nLoc: a.txt:0-1\n"
-        );
-        let pin_id = f.commit(&pin_message);
-        f.update_ref(&format!("refs/meta/claims/{pin_id}"), &pin_id);
+        crate::anchor::attach(&repo, anchor).expect("attach anchor");
+        drop(repo);
 
         let repo = f.open();
         let facts = RepoFacts::new(&repo);

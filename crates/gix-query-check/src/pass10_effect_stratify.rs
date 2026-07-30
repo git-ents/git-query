@@ -357,7 +357,7 @@ mod tests {
     }
 
     /// `signer/2` is claim-backed, so a body joining on it reads
-    /// `refs/meta/claims/*` whatever the declaration says.
+    /// `refs/claims/*` whatever the declaration says.
     #[test]
     fn a_claim_backed_footprint_maps_to_the_claims_namespace() {
         let registry = Registry::host();
@@ -365,7 +365,7 @@ mod tests {
         footprint.base.insert(PredicateKey::new("signer", 2));
         footprint.base.insert(PredicateKey::new("parent", 2));
         let mapped = read_namespaces(&footprint, &registry);
-        assert_eq!(mapped.namespaces, vec![ns("refs/meta/claims/*")]);
+        assert_eq!(mapped.namespaces, vec![ns("refs/claims/*")]);
         // `parent/2` is content-addressed: no namespace, and visibly so.
         assert!(
             mapped
@@ -380,14 +380,13 @@ mod tests {
     /// cycle. This is the soundness fix, so it is the test that matters most.
     #[test]
     fn a_cycle_invisible_in_declared_reads_is_rejected() {
-        let program =
-            program_with_claim_reading_effect(vec![ns("refs/meta/claims/action/kiln/main")]);
+        let program = program_with_claim_reading_effect(vec![ns("refs/claims/*")]);
         let errors = run(&program);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(matches!(
             errors[0],
             CheckError::EffectCycle { ref namespace, .. }
-                if namespace.as_str() == "refs/meta/claims/action/kiln/main"
+                if namespace.as_str() == "refs/claims/*"
         ));
     }
 
@@ -402,7 +401,7 @@ mod tests {
 
     /// `watch(M) :- signer(C, M).` plus `effect watch reads("refs/nothing")
     /// writes(...)` -- a declared read set that overlaps nothing, over a body
-    /// that reads `refs/meta/claims/*`.
+    /// that reads `refs/claims/*`.
     fn program_with_claim_reading_effect(writes: Vec<Namespace>) -> Program {
         let mut module = gix_query_ir::Module::new("m");
         module.rules.push(Rule::new(

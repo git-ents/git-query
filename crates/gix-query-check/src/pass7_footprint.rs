@@ -229,6 +229,6 @@ mod tests {
             .get(&PredicateKey::new("reviewers", 1))
             .expect("has a footprint");
         assert!(fp.base.contains(&PredicateKey::new("signer", 2)));
-        assert!(fp.ref_globs.contains("refs/meta/claims/*"));
+        assert!(fp.ref_globs.contains("refs/claims/*"));
     }
 }

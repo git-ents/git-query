@@ -114,8 +114,9 @@ pub(crate) fn member_facts<'a>(
 ) -> Result<Facts<'a>, HostError> {
     match bound.first() {
         Some(Some(v)) => {
-            // A bound value that is not hex at all -- a `Signer:` trailer
-            // written as a bare email, say -- can never name a member ref;
+            // A bound value that is not hex at all -- a rule joining a name
+            // or an email into this position, say -- can never name a member
+            // ref;
             // "no such member" is the same honest answer a syntactically
             // valid but unregistered id gets, not a backend failure.
             let Some(member) = v.as_sym().and_then(|s| try_parse_hex(s.as_bytes())) else {
@@ -272,10 +273,10 @@ mod tests {
         assert!(revoked.is_empty());
     }
 
-    /// The bound-path manifestation of the same defect: a `Signer:` trailer
-    /// written as a bare email (`claim.rs`'s type-guessing lets this
-    /// through) reaches `member(+M)` as a non-hex value. It must read as "no
-    /// such member", not fail the query that asked.
+    /// The bound-path manifestation of the same defect: a rule may put any
+    /// symbol in this position, and one that is not an oid at all reaches
+    /// `member(+M)` as a non-hex value. It must read as "no such member", not
+    /// fail the query that asked.
     #[test]
     fn a_non_hex_bound_member_value_is_false_not_an_error() {
         let dir = tempfile::tempdir().expect("tempdir");

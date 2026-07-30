@@ -1,5 +1,6 @@
 //! [`RepoBuiltins`]: `cand`, every candidate location an anchor might sit at
-//! on a revision, unselected.
+//! on a revision, unselected -- and `key_valid_at`, the claim-validity filter
+//! that shares this crate's one absent-safe convention with it.
 //!
 //! `cand(A, Rev, Loc, O, C)` is monotone -- it only ever adds rows, never
 //! retracts one candidate because a better one turned up -- so semi-naive
@@ -19,7 +20,9 @@
 //! confidence 1.0 by construction) and `gix-anchor`'s oracle chain
 //! (`op_log`, `diff_trace`, `fingerprint`) -- "each oracle contributes
 //! candidates as separate base facts" (ARCHITECTURE.md), so every candidate
-//! becomes its own row here rather than being folded together.
+//! becomes its own row here rather than being folded together. The pin leg
+//! reads a signed `rebind-pin` claim's payload through anchor's own schema; a
+//! claim whose signature does not verify pins nothing.
 //!
 //! `Loc` is one atomic term, `"<path>:<start>-<end>"` (`ValueType::Location`):
 //! the value domain has no tuple type to hold a path and a byte span as
@@ -38,11 +41,19 @@
 //! `bind_selects_the_maximum_confidence_not_the_lexicographically_greatest`
 //! for the concrete case a naive string comparison gets backwards).
 //!
-//! `op_log` is called with no [`gix_anchor::OpLogSource`]: no operation log
-//! exists yet anywhere in the product family (DELTA X6), so it is
-//! absent-safe and always contributes zero candidates here. The call stays
-//! in [`candidates`] anyway, as a marker for the day a source exists, rather
-//! than silently dropping the oracle from the chain.
+//! # The one absent-safe convention, and its one gap
+//!
+//! No operation log exists yet anywhere in the product family (DELTA X6).
+//! Two things here are backed by it, and both say so the same way rather than
+//! inventing a second convention:
+//!
+//! - `op_log` is called with no [`gix_anchor::OpLogSource`], so it is
+//!   absent-safe and contributes zero candidates. The call stays in
+//!   [`candidates`] as a marker for the day a source exists, rather than
+//!   silently dropping the oracle from the chain.
+//! - [`key_valid_at`] is the same marker in filter position, with the opposite
+//!   absent value -- see its own documentation for why, and for the one place
+//!   the gap is written down.
 
 use gix::ObjectId;
 use gix_anchor::{Candidate, Oracle};
@@ -68,9 +79,50 @@ impl<'r> RepoBuiltins<'r> {
     }
 }
 
+/// Whether `key` is `key_valid_at/1`.
+fn is_key_valid_at(key: &PredicateKey) -> bool {
+    key.arity == 1 && key.name.as_ref() == "key_valid_at"
+}
+
+/// `key_valid_at(+Claim)`: was the claim's signing key valid at the op-log
+/// position where the claim was admitted (ARCHITECTURE.md, "git-attest").
+///
+/// **This is the one place the op-log gap is written down.** Admission order
+/// lives in the op-log, and no op-log exists yet anywhere in the product family
+/// (DELTA X6) -- there is no ref to read, no adapter to call, and no position to
+/// compare a key's lifetime against. Until one exists this holds for every
+/// claim, which is the absent-safe answer for a *filter*: a filter that
+/// answered `false` with no data would silently empty every rule that composes
+/// it, and `reviewed(B) :- ..., key_valid_at(C).` would derive nothing at all
+/// rather than deriving what the available evidence supports. `cand`'s
+/// `op_log(None, ...)` leg contributes zero *candidates* for the mirror-image
+/// reason: absent evidence adds no rows to a generator and removes none from a
+/// filter.
+///
+/// What this does not decide: whether revoking a key retroactively invalidates
+/// claims already admitted under it. That is rule policy, deliberately left
+/// open (ARCHITECTURE.md's open questions), and the contract here is worded so
+/// that either answer is a change to this function's *backing* and to no
+/// caller's rule text.
+///
+/// A claim's cryptographic soundness is not asked here and never was: an
+/// unverified claim contributes no facts at all (`crate::claim`), so a rule can
+/// only ever reach this predicate with a claim whose signature already checked
+/// out.
+fn key_valid_at(key: &PredicateKey, bound: Bindings<'_>) -> Result<bool, HostError> {
+    let Some(Some(claim)) = bound.first() else {
+        return Err(HostError::UnsupportedMode { key: key.clone() });
+    };
+    // The claim is parsed rather than ignored: `+Claim` is `Oid`-typed, and a
+    // predicate that accepted a non-oid today would accept it after the op-log
+    // lands, when the value is a lookup key rather than a formality.
+    parse_oid(key, claim)?;
+    Ok(true)
+}
+
 impl Builtin for RepoBuiltins<'_> {
     fn provides(&self, key: &PredicateKey) -> bool {
-        key.arity == 5 && key.name.as_ref() == "cand"
+        (key.arity == 5 && key.name.as_ref() == "cand") || is_key_valid_at(key)
     }
 
     fn call(
@@ -81,6 +133,12 @@ impl Builtin for RepoBuiltins<'_> {
     ) -> Result<(), HostError> {
         if !self.provides(key) {
             return Err(HostError::NoProvider(key.clone()));
+        }
+        if is_key_valid_at(key) {
+            if key_valid_at(key, bound)? {
+                out.push(vec![bound[0].clone().expect("bound, checked above")]);
+            }
+            return Ok(());
         }
         let (Some(Some(anchor_v)), Some(Some(rev_v))) = (bound.first(), bound.get(1)) else {
             return Err(HostError::UnsupportedMode { key: key.clone() });
@@ -108,6 +166,20 @@ impl Builtin for RepoBuiltins<'_> {
             }
         }
         Ok(())
+    }
+
+    fn holds(&self, key: &PredicateKey, args: &[Value]) -> Result<bool, HostError> {
+        if is_key_valid_at(key) {
+            // A filter answered without allocating a row, the same shortcut the
+            // comparisons take: `key_valid_at` sits in the body of every
+            // validity-checking rule, once per claim.
+            let bound: Vec<Option<Value>> = args.iter().cloned().map(Some).collect();
+            return key_valid_at(key, &bound);
+        }
+        let bound: Vec<Option<Value>> = args.iter().cloned().map(Some).collect();
+        let mut out = Vec::new();
+        self.call(key, &bound, &mut out)?;
+        Ok(!out.is_empty())
     }
 }
 
@@ -227,8 +299,12 @@ fn satisfies(bound: Bindings<'_>, tuple: &[Value]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use gix_anchor::{REBIND_PIN_KIND, RebindPin};
+    use gix_attest::Target;
+    use test_support::{ClaimFixture, Fixture};
+
     use super::*;
-    use test_support::Fixture;
+    use crate::claim::ANCHOR_TARGET_KIND;
 
     fn numbered(range: std::ops::RangeInclusive<u32>) -> String {
         range.map(|n| format!("line {n}\n")).collect()
@@ -383,11 +459,26 @@ mod tests {
         assert_eq!(oracle, "fingerprint");
         assert_ne!(confidence, 10_000, "setup: the edit must cost confidence");
 
-        let pin_message = format!(
-            "rebind\n\nKind: rebind-pin\nTarget: {id}\nRev: {head}\nLoc: file.txt:200-260\n"
+        // The pin arrives the only way pins arrive: a signed `rebind-pin`
+        // claim on the anchor, its payload written against anchor's own
+        // registered schema. The span is deliberately far from where either
+        // oracle would look, so a pin row cannot be mistaken for one of theirs.
+        let claims = ClaimFixture::new(&f);
+        claims.register_payload_schema::<RebindPin>(REBIND_PIN_KIND);
+        let pin = RebindPin {
+            rev: ObjectId::from_hex(head.as_bytes()).expect("hex rev").into(),
+            path: "file.txt".to_owned(),
+            span: (200, 260),
+        };
+        let payload = claims.payload(REBIND_PIN_KIND, &pin);
+        claims.sign(
+            &Target {
+                kind: ANCHOR_TARGET_KIND.to_owned(),
+                id: id.into(),
+            },
+            payload,
+            REBIND_PIN_KIND,
         );
-        let pin_id = f.commit(&pin_message);
-        f.update_ref(&format!("refs/meta/claims/{pin_id}"), &pin_id);
         let repo = f.open();
 
         let mut out = Vec::new();
