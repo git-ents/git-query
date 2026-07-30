@@ -1866,6 +1866,7 @@ dependencies = [
  "gix-query-ir",
  "gix-query-parse",
  "gix-query-rules",
+ "gix-refstore",
  "rstest",
  "tempfile",
  "test-support",

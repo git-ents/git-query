@@ -8,6 +8,7 @@
 //! keeping this file a table of contents rather than an implementation.
 
 use gix_query_ir::{Bindings, FactSource, Facts, HostError, PredicateKey};
+use gix_refstore::RefName;
 
 use crate::refs::HostRefs;
 use crate::{anchor, author, claim, commit, line, member, tree};
@@ -32,16 +33,60 @@ const PROVIDED: &[(&str, usize)] = &[
 ];
 
 /// A [`FactSource`] reading every repo-backed EDB relation over one open
-/// [`gix::Repository`].
+/// [`gix::Repository`] -- live, or as of a fixed set of ref override values
+/// (`Some` = held this value, `None` = did not exist) when constructed via
+/// [`RepoFacts::as_of`].
+///
+/// The override set is stored, not resolved into a [`HostRefs`] eagerly:
+/// each dispatched predicate builds its own [`HostRefs`] fresh
+/// ([`RepoFacts::refs`]), the same way `claim.rs`'s `ClaimReader` already
+/// opened its own `gix-store` `Store` fresh per call before this existed --
+/// so a query touching only content-addressed predicates (`commit`,
+/// `parent`, `tree_entry`, `author`, `line`) never pays for a ref read it
+/// does not make.
 pub struct RepoFacts<'r> {
     repo: &'r gix::Repository,
+    overrides: Vec<(RefName, Option<gix::ObjectId>)>,
 }
 
 impl<'r> RepoFacts<'r> {
-    /// A fact source over `repo`.
+    /// A fact source over `repo`, as it currently stands.
     #[must_use]
     pub fn new(repo: &'r gix::Repository) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            overrides: Vec::new(),
+        }
+    }
+
+    /// A fact source over `repo`, reading every ref-glob-backed relation
+    /// (`member`, `revoked`, `claim`, `kind`, `target`, `signer`, `verdict`,
+    /// `anchor`) as it would answer if every name in `overrides` held the
+    /// value given there instead of its real one.
+    ///
+    /// This is the seam `gix-effect`'s trigger detection (`DEVPLAN-effect.md`
+    /// D3) evaluates "at old" through, in place of rewinding and restoring a
+    /// real ref: the repository is read, never written, to answer what a
+    /// `when` body would have derived before a ref moved. Content-addressed
+    /// predicates are unaffected by `overrides` -- they read the object
+    /// database directly, never a ref namespace, so there is nothing here
+    /// for an override to shadow.
+    #[must_use]
+    pub fn as_of(
+        repo: &'r gix::Repository,
+        overrides: impl IntoIterator<Item = (RefName, Option<gix::ObjectId>)>,
+    ) -> Self {
+        Self {
+            repo,
+            overrides: overrides.into_iter().collect(),
+        }
+    }
+
+    /// A fresh ref view over this source's overrides -- live when there are
+    /// none, matching [`HostRefs::live`]'s own contract that an empty
+    /// override set answers identically to the repository itself.
+    fn refs(&self) -> HostRefs<'r> {
+        HostRefs::as_of(self.repo, self.overrides.iter().cloned())
     }
 }
 
@@ -58,26 +103,18 @@ impl FactSource for RepoFacts<'_> {
         bound: Bindings<'_>,
         attribute: bool,
     ) -> Result<Facts<'a>, HostError> {
-        // `member`, `claim` (and its envelope relations), and `anchor` are
-        // the ref-glob-backed EDB -- the ones `HostRefs` exists for (see
-        // that module's doc). Built live here, once per dispatch: there is
-        // no override set yet at this point in the crate's history (that
-        // lands with `RepoFacts::as_of`), so this is exactly the raw
-        // `gix::Repository` reads `member.rs`/`anchor.rs` used to make
-        // directly, routed through the one seam instead.
-        let refs = HostRefs::live(self.repo);
         match (key.name.as_ref(), key.arity) {
             ("commit", 1) => commit::facts(self.repo, key, bound, attribute),
             ("parent", 2) => commit::parent_facts(self.repo, key, bound, attribute),
             ("tree_entry", 3) => tree::facts(self.repo, key, bound, attribute),
             ("author", 2) => author::facts(self.repo, key, bound, attribute),
-            ("member", 1) => member::member_facts(self.repo, &refs, key, bound, attribute),
-            ("revoked", 1) => member::revoked_facts(self.repo, &refs, key, bound, attribute),
-            ("claim", 1) => claim::claim_facts(self.repo, refs, key, bound, attribute),
+            ("member", 1) => member::member_facts(self.repo, &self.refs(), key, bound, attribute),
+            ("revoked", 1) => member::revoked_facts(self.repo, &self.refs(), key, bound, attribute),
+            ("claim", 1) => claim::claim_facts(self.repo, self.refs(), key, bound, attribute),
             ("kind", 2) | ("target", 2) | ("signer", 2) | ("verdict", 2) => {
-                claim::envelope_facts(self.repo, refs, key, bound, attribute)
+                claim::envelope_facts(self.repo, self.refs(), key, bound, attribute)
             }
-            ("anchor", 1) => anchor::facts(self.repo, &refs, key, bound, attribute),
+            ("anchor", 1) => anchor::facts(self.repo, &self.refs(), key, bound, attribute),
             ("line", 2) => line::facts(self.repo, key, bound, attribute),
             _ => Err(HostError::NoProvider(key.clone())),
         }

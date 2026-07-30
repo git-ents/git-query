@@ -23,6 +23,7 @@ use gix_query_ir::{CheckedProgram, Registry};
 pub use gix_query_eval::{DerivationTree, NegationWitness};
 pub use gix_query_ir::{EffectDecl, Footprint, Namespace, Registry as HostRegistry, Value};
 pub use gix_query_rules::RuleStore;
+pub use gix_refstore::RefName;
 
 /// Join a list of diagnostics into one message, one per line.
 fn join<E: std::fmt::Display>(errors: &[E]) -> String {
@@ -310,7 +311,8 @@ pub fn run_goal(
         .map_err(|e| QueryError::Parse(join(&e)))?;
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    run_checked_goal(repo, &checked, &goal)
+    let facts = RepoFacts::new(repo);
+    run_checked_goal(repo, &facts, &checked, &goal)
 }
 
 /// Run a rule-language body to a demand fixpoint against `repo`, selecting
@@ -334,7 +336,41 @@ pub fn run_body(repo: &gix::Repository, body_source: &str) -> Result<Vec<Vec<Val
         gix_query_parse::parse_goal(body_source).map_err(|e| QueryError::Parse(join(&e)))?;
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    run_checked_goal(repo, &checked, &goal)
+    let facts = RepoFacts::new(repo);
+    run_checked_goal(repo, &facts, &checked, &goal)
+}
+
+/// [`run_body`], but evaluating `body_source` against `repo` as it would
+/// answer if every ref named in `overrides` held the value given there
+/// instead of its real one (`Some` = held this value, `None` = did not
+/// exist), rather than against the live repository.
+///
+/// This is the seam `gix-effect`'s trigger detection (`DEVPLAN-effect.md`
+/// D3) evaluates a `when` body "at old" through, replacing what used to be a
+/// rewind-then-restore of the real ref: [`RepoFacts::as_of`] layers a
+/// read-only [`gix_refstore::AsOfRefStore`] decorator under the same
+/// repo-backed providers `run_body` uses, so the repository is read, never
+/// written, to answer what its `when` body would have derived before a ref
+/// moved. Only the ref-glob-backed EDB (`member`, `revoked`, `claim`,
+/// `kind`, `target`, `signer`, `verdict`, `anchor`) sees `overrides`;
+/// content-addressed predicates read the object database directly and are
+/// unaffected, exactly as `RepoFacts::as_of` documents.
+///
+/// # Errors
+/// See [`QueryError`].
+pub fn run_body_as_of(
+    repo: &gix::Repository,
+    body_source: &str,
+    overrides: impl IntoIterator<Item = (RefName, Option<gix::ObjectId>)>,
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program(repo)?;
+
+    let mut goal =
+        gix_query_parse::parse_goal(body_source).map_err(|e| QueryError::Parse(join(&e)))?;
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    let facts = RepoFacts::as_of(repo, overrides);
+    run_checked_goal(repo, &facts, &checked, &goal)
 }
 
 /// Tier 1: apply `predicate` with `bound` values at the given argument
@@ -377,18 +413,24 @@ pub fn run_predicate(
     let mut goal = gix_query_parse::goal_from_predicate(key.name.clone(), key.arity, bound);
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    run_checked_goal(repo, &checked, &goal)
+    let facts = RepoFacts::new(repo);
+    run_checked_goal(repo, &facts, &checked, &goal)
 }
 
 /// Shared tail of tiers 1 and 3: validate a resolved [`gix_query_ir::Goal`]
 /// against `checked`, magic-set rewrite it, lower it to Nemo, audit the
-/// emission, and run it to a demand fixpoint against `repo`.
+/// emission, and run it to a demand fixpoint against `repo` through `facts`.
+///
+/// `facts` is supplied rather than built here so a caller chooses live
+/// ([`RepoFacts::new`]) or as-of ([`RepoFacts::as_of`]) evaluation -- the
+/// only difference [`run_body_as_of`] has from [`run_body`].
 fn run_checked_goal(
     repo: &gix::Repository,
+    facts: &RepoFacts<'_>,
     checked: &CheckedProgram,
     goal: &gix_query_ir::Goal,
 ) -> Result<Vec<Vec<Value>>, QueryError> {
-    Ok(run_checked_goal_full(repo, checked, goal)?.2.answer)
+    Ok(run_checked_goal_full(repo, facts, checked, goal)?.2.answer)
 }
 
 /// [`run_checked_goal`], but keeping the converged tables and the rewritten
@@ -397,6 +439,7 @@ fn run_checked_goal(
 /// state a fresh call would otherwise discard.
 fn run_checked_goal_full(
     repo: &gix::Repository,
+    facts: &RepoFacts<'_>,
     checked: &CheckedProgram,
     goal: &gix_query_ir::Goal,
 ) -> Result<
@@ -413,9 +456,8 @@ fn run_checked_goal_full(
     let emitted = gix_query_eval::NemoProgram::emit(&rewritten)?;
     emitted.audit()?;
 
-    let facts = RepoFacts::new(repo);
     let builtins = AllBuiltins::new(repo);
-    let result = gix_query_eval::run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 64)?;
+    let result = gix_query_eval::run_to_fixpoint(&rewritten, &emitted, facts, &builtins, 64)?;
 
     Ok((rewritten, emitted, result))
 }
@@ -488,7 +530,8 @@ pub fn explain_predicate(
     let mut goal = gix_query_parse::goal_from_predicate(key.name.clone(), key.arity, bound);
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    let (rewritten, emitted, result) = run_checked_goal_full(repo, &checked, &goal)?;
+    let facts = RepoFacts::new(repo);
+    let (rewritten, emitted, result) = run_checked_goal_full(repo, &facts, &checked, &goal)?;
 
     Ok(gix_query_eval::explain(
         &emitted,
