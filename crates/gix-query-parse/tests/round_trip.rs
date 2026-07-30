@@ -166,6 +166,7 @@ fn arb_module() -> impl Strategy<Value = Module> {
                 name: Arc::from("m"),
                 exports,
                 rules,
+                effects: Vec::new(),
             }
         })
     })

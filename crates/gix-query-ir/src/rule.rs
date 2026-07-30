@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::{Atom, Literal, PredicateKey, Span, Var, Visibility};
+use crate::{Atom, EffectDecl, Literal, PredicateKey, Span, Var, Visibility};
 
 /// A rule's position in the program it belongs to.
 ///
@@ -153,6 +153,8 @@ pub struct Module {
     pub exports: Vec<Export>,
     /// Its rules, in source order.
     pub rules: Vec<Rule>,
+    /// Its effect declarations, in source order.
+    pub effects: Vec<EffectDecl>,
 }
 
 impl Module {
@@ -162,6 +164,7 @@ impl Module {
             name: name.into(),
             exports: Vec::new(),
             rules: Vec::new(),
+            effects: Vec::new(),
         }
     }
 
@@ -189,6 +192,10 @@ pub struct Program {
     visibility: BTreeMap<PredicateKey, Visibility>,
     /// Which module each rule came from, parallel to `rules`.
     origins: Vec<Arc<str>>,
+    /// Every effect declaration, flattened across modules the same way rules
+    /// are: the effect-stratification pass reasons about the whole program's
+    /// namespace graph, not one module's slice of it.
+    effects: Vec<EffectDecl>,
 }
 
 impl Program {
@@ -206,7 +213,9 @@ impl Program {
             name,
             exports,
             rules,
+            effects,
         } = module;
+        self.effects.extend(effects);
         for rule in rules {
             let visibility = if exports.iter().any(|e| e.key == rule.head.predicate) {
                 Visibility::Public
@@ -267,6 +276,12 @@ impl Program {
     /// Every predicate the program defines, in key order.
     pub fn defined(&self) -> impl Iterator<Item = &PredicateKey> {
         self.visibility.keys()
+    }
+
+    /// Every effect declaration in the program, across every module.
+    #[must_use]
+    pub fn effects(&self) -> &[EffectDecl] {
+        &self.effects
     }
 
     /// The visibility of a predicate the program defines.

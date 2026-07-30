@@ -29,6 +29,13 @@
 //! 9. Minting confinement -- no builtin declared `mints` inside a recursive
 //!    stratum, over the same decomposition pass 5 and pass 7 already used.
 //!
+//! Plus, after the nine: effect stratification -- no cycle in the graph an
+//! effect's declared write set induces over another effect's declared read
+//! set (`ARCHITECTURE.md`'s git-effect section calls this fork-bomb
+//! freedom). Not numbered among the nine because it validates
+//! [`gix_query_ir::EffectDecl`]s, a declaration form the rule body language
+//! does not produce.
+//!
 //! # What this crate does not do
 //!
 //! It has no git dependency and never will: pass 7's footprint is
@@ -46,6 +53,7 @@
 
 mod error;
 mod graph;
+mod pass10_effect_stratify;
 mod pass1_symbols;
 mod pass2_resolve;
 mod pass3_types;
@@ -63,8 +71,9 @@ pub use error::{CheckError, Errors, Pass, Site};
 
 use gix_query_ir::{CheckedProgram, Goal, GoalAdornments, Program, Registry};
 
-/// Run all nine validation passes over `program`, extending `registry` with
-/// one IDB entry per predicate the program defines.
+/// Run all nine validation passes, plus effect stratification, over
+/// `program`, extending `registry` with one IDB entry per predicate the
+/// program defines.
 ///
 /// This is the only way to construct a [`CheckedProgram`]: every downstream
 /// crate that needs a validated program takes one, never a `Program` plus a
@@ -93,6 +102,7 @@ pub fn check(program: &Program, registry: &Registry) -> Result<CheckedProgram, E
     let footprints = pass7_footprint::compute(program, &working, &stratify);
     let adornments = pass8_modes::check(program, &mut working, &mut errors);
     pass9_mint::check(program, &working, &stratify, &mut errors);
+    pass10_effect_stratify::check(program, &mut errors);
 
     if !errors.is_empty() {
         return Err(errors);

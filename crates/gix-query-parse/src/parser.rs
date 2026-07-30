@@ -10,8 +10,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use gix_query_ir::{
-    Atom, Compare, CompareOp, Goal, Literal, Module, PredicateKey, Rule, Span, SpannedTerm, Term,
-    Value, Var,
+    Atom, Compare, CompareOp, EffectDecl, Goal, Literal, Module, Namespace, PredicateKey, Rule,
+    Span, SpannedTerm, Term, Value, Var,
 };
 
 use crate::error::{Errors, ParseError};
@@ -37,10 +37,12 @@ pub fn parse_module(name: impl Into<Arc<str>>, source: &str) -> Result<Module, E
     };
     let mut exports = Vec::new();
     let mut rules = Vec::new();
+    let mut effects = Vec::new();
     while !parser.at_eof() {
         match parser.item() {
             Ok(Item::Export(e)) => exports.push(e),
             Ok(Item::Rule(r)) => rules.push(r),
+            Ok(Item::Effect(e)) => effects.push(e),
             Err(()) => parser.resync_to_dot(),
         }
     }
@@ -57,6 +59,7 @@ pub fn parse_module(name: impl Into<Arc<str>>, source: &str) -> Result<Module, E
             name: name.into(),
             exports,
             rules,
+            effects,
         })
     } else {
         Err(parser.errors)
@@ -144,6 +147,7 @@ fn first_occurrence_vars(body: &[Literal]) -> Vec<Var> {
 enum Item {
     Export(gix_query_ir::Export),
     Rule(Rule),
+    Effect(EffectDecl),
 }
 
 struct Parser {
@@ -245,13 +249,97 @@ impl Parser {
     fn item(&mut self) -> Result<Item, ()> {
         if self.at_pub_keyword() {
             self.export()
+        } else if self.at_effect_keyword() {
+            self.effect().map(Item::Effect)
         } else {
             self.rule().map(Item::Rule)
         }
     }
 
     fn at_pub_keyword(&self) -> bool {
-        matches!(&self.peek().kind, TokenKind::Sym(s) if &**s == "pub")
+        self.at_keyword("pub")
+    }
+
+    fn at_keyword(&self, word: &str) -> bool {
+        matches!(&self.peek().kind, TokenKind::Sym(s) if &**s == word)
+    }
+
+    /// Whether the cursor is at an `effect` declaration rather than an atom
+    /// literally named `effect` (`effect(X) :- ...`) -- the latter's next
+    /// token is `(`, the former's is the effect's name.
+    fn at_effect_keyword(&self) -> bool {
+        self.at_keyword("effect")
+            && !matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                Some(TokenKind::LParen)
+            )
+    }
+
+    /// Parse an effect declaration: `effect NAME [reads(NS, ...)]
+    /// [writes(NS, ...)].`, in either order, each clause at most once.
+    ///
+    /// This is the minimal surface `ARCHITECTURE.md`'s git-effect section
+    /// needs before the rest of the effect subsystem exists: a name plus its
+    /// declared read and write namespace sets, nothing executable. `NS` is a
+    /// quoted string rather than a new refname token, since [`Term::Const`]
+    /// already carries arbitrary text and a namespace pattern needs no
+    /// grammar beyond that.
+    fn effect(&mut self) -> Result<EffectDecl, ()> {
+        let start = self.advance(); // `effect`
+        let (name, _name_span) = self.predicate_name()?;
+        let mut reads: Option<Vec<Namespace>> = None;
+        let mut writes: Option<Vec<Namespace>> = None;
+        loop {
+            if self.at_keyword("reads") {
+                if reads.is_some() {
+                    self.expected("at most one 'reads' clause", &self.peek().clone());
+                    return Err(());
+                }
+                self.advance();
+                reads = Some(self.namespace_list()?);
+            } else if self.at_keyword("writes") {
+                if writes.is_some() {
+                    self.expected("at most one 'writes' clause", &self.peek().clone());
+                    return Err(());
+                }
+                self.advance();
+                writes = Some(self.namespace_list()?);
+            } else {
+                break;
+            }
+        }
+        let dot = self.expect(TokenKind::Dot, "'.'")?;
+        Ok(EffectDecl {
+            name: name.into(),
+            reads: reads.unwrap_or_default(),
+            writes: writes.unwrap_or_default(),
+            span: start.span.join(dot.span),
+        })
+    }
+
+    /// A parenthesized, comma-separated list of quoted namespace patterns:
+    /// `("refs/heads/main", "refs/claims/*")`.
+    fn namespace_list(&mut self) -> Result<Vec<Namespace>, ()> {
+        self.expect(TokenKind::LParen, "'('")?;
+        let mut out = Vec::new();
+        if !self.check(&TokenKind::RParen) {
+            loop {
+                let tok = self.peek().clone();
+                let TokenKind::Str(s) = &tok.kind else {
+                    self.expected("a quoted namespace pattern", &tok);
+                    return Err(());
+                };
+                out.push(Namespace::new(s.clone()));
+                self.advance();
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok(out)
     }
 
     fn export(&mut self) -> Result<Item, ()> {
@@ -495,4 +583,55 @@ impl Parser {
 
 fn starts_lowercase(s: &str) -> bool {
     s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_effect_declaration_parses_its_read_and_write_sets() {
+        let module = parse_module(
+            "m",
+            r#"effect build_on_push reads("refs/heads/main") writes("refs/claims/action/kiln/*")."#,
+        )
+        .expect("valid effect declaration");
+        assert_eq!(module.effects.len(), 1);
+        let e = &module.effects[0];
+        assert_eq!(&*e.name, "build_on_push");
+        assert_eq!(e.reads, vec![Namespace::new("refs/heads/main")]);
+        assert_eq!(e.writes, vec![Namespace::new("refs/claims/action/kiln/*")]);
+    }
+
+    #[test]
+    fn an_effect_with_no_clauses_declares_empty_sets() {
+        let module = parse_module("m", "effect noop.").expect("valid effect declaration");
+        assert_eq!(module.effects.len(), 1);
+        assert!(module.effects[0].reads.is_empty());
+        assert!(module.effects[0].writes.is_empty());
+    }
+
+    #[test]
+    fn writes_before_reads_is_accepted() {
+        let module = parse_module("m", r#"effect e writes("refs/out") reads("refs/in")."#)
+            .expect("valid effect declaration");
+        assert_eq!(module.effects[0].reads, vec![Namespace::new("refs/in")]);
+        assert_eq!(module.effects[0].writes, vec![Namespace::new("refs/out")]);
+    }
+
+    #[test]
+    fn a_predicate_literally_named_effect_still_parses_as_a_rule() {
+        let module =
+            parse_module("m", "effect(X) :- member(X).").expect("valid rule using 'effect' name");
+        assert!(module.effects.is_empty());
+        assert_eq!(module.rules.len(), 1);
+        assert_eq!(&*module.rules[0].head.predicate.name, "effect");
+    }
+
+    #[test]
+    fn a_duplicate_reads_clause_is_rejected() {
+        let err = parse_module("m", r#"effect e reads("refs/a") reads("refs/b")."#)
+            .expect_err("duplicate reads clause");
+        assert!(!err.is_empty());
+    }
 }

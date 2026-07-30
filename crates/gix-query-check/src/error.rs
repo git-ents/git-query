@@ -8,7 +8,9 @@
 
 use std::fmt;
 
-use gix_query_ir::{PredicateKey, RuleId, Span, Var};
+use std::sync::Arc;
+
+use gix_query_ir::{Namespace, PredicateKey, RuleId, Span, Var};
 
 /// Which of the nine validation passes produced a diagnostic.
 ///
@@ -35,6 +37,13 @@ pub enum Pass {
     Modes,
     /// 9. Minting confinement.
     MintingConfinement,
+    /// Effect stratification (numbered 10, after the nine) -- the
+    /// fork-bomb-freedom check `ARCHITECTURE.md`'s git-effect section
+    /// describes: no cycle in the graph an effect's declared write set
+    /// induces over another effect's declared read set. Not one of the nine
+    /// `docs/query-and-rules.adoc` numbers; it runs after them, over effect
+    /// declarations rather than rules.
+    EffectStratification,
 }
 
 impl Pass {
@@ -52,6 +61,7 @@ impl Pass {
             Self::Footprint => 7,
             Self::Modes => 8,
             Self::MintingConfinement => 9,
+            Self::EffectStratification => 10,
         }
     }
 }
@@ -68,6 +78,7 @@ impl fmt::Display for Pass {
             Self::Footprint => "footprint",
             Self::Modes => "mode inference",
             Self::MintingConfinement => "minting confinement",
+            Self::EffectStratification => "effect stratification",
         };
         write!(f, "pass {} ({name})", self.number())
     }
@@ -422,6 +433,25 @@ pub enum CheckError {
         /// Where.
         span: Span,
     },
+    /// An effect's declared write set overlaps a namespace another effect
+    /// declares in its read set, and that second effect's writes lead --
+    /// through zero or more further effects -- back to a namespace the first
+    /// effect reads. This is the fork bomb: a signed transition that can
+    /// trigger a chain of effects which eventually re-triggers itself.
+    #[error(
+        "effect {from} writes {namespace}, which effect {to} reads, closing a cycle in the \
+         effect graph"
+    )]
+    EffectCycle {
+        /// The effect whose write closes the cycle.
+        from: Arc<str>,
+        /// The effect whose read the write overlaps.
+        to: Arc<str>,
+        /// The namespace the two declarations share.
+        namespace: Namespace,
+        /// Where `from` was declared.
+        span: Span,
+    },
 }
 
 impl CheckError {
@@ -452,6 +482,7 @@ impl CheckError {
             | Self::UnjoinedLiteral { .. } => Pass::ShapeCaps,
             Self::ModeViolation { .. } | Self::UnsupportedEdbMode { .. } => Pass::Modes,
             Self::MintingInRecursion { .. } => Pass::MintingConfinement,
+            Self::EffectCycle { .. } => Pass::EffectStratification,
         }
     }
 
@@ -476,7 +507,8 @@ impl CheckError {
             | Self::UnjoinedLiteral { span, .. }
             | Self::ModeViolation { span, .. }
             | Self::UnsupportedEdbMode { span, .. }
-            | Self::MintingInRecursion { span, .. } => *span,
+            | Self::MintingInRecursion { span, .. }
+            | Self::EffectCycle { span, .. } => *span,
             Self::NotRedefinable { .. } | Self::PredicateArityLimit { .. } => Span::synthetic(),
             Self::TooManyLiterals { .. }
             | Self::TooManyVariables { .. }

@@ -37,6 +37,7 @@
 
 mod canonical;
 mod checked;
+mod effect;
 mod error;
 mod host;
 mod literal;
@@ -49,6 +50,7 @@ mod term;
 
 pub use canonical::Canonicalizer;
 pub use checked::{CheckedProgram, Footprint, Stratification};
+pub use effect::{EffectDecl, Namespace};
 pub use error::Error;
 pub use host::{Bindings, Builtin, Comparisons, Fact, FactSource, Facts, HostError};
 pub use literal::{Atom, Compare, CompareOp, Literal, PredicateKey};
