@@ -93,6 +93,22 @@ pub enum ParseError {
         /// Where the `pub` declaration was written.
         span: Span,
     },
+    /// An `effect` declaration still writes a `reads(...)` clause.
+    ///
+    /// `DEVPLAN-effect.md` D2 retires the clause: an effect's read set is
+    /// computed from its body's footprint, never declared, because a
+    /// declaration can lie about what it reads while a footprint cannot. A
+    /// module written before D2 must fail here, loudly and by name, rather
+    /// than falling through to a generic "expected '.'" error that gives no
+    /// clue what changed.
+    #[error(
+        "the 'reads(...)' clause is retired (DEVPLAN-effect.md D2): an effect's read set is \
+         computed from its body's footprint, not declared"
+    )]
+    RetiredReadsClause {
+        /// Where the `reads` keyword was written.
+        span: Span,
+    },
 }
 
 impl ParseError {
@@ -108,7 +124,8 @@ impl ParseError {
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEof { span, .. }
             | Self::ReservedPrefix { span, .. }
-            | Self::PubUndefined { span, .. } => *span,
+            | Self::PubUndefined { span, .. }
+            | Self::RetiredReadsClause { span } => *span,
         }
     }
 }

@@ -90,9 +90,9 @@ pub enum QueryError {
 /// `gix-query-parse` and validated by the same passes as any module, which is
 /// the entire reason effects share this repo.
 ///
-/// [`EffectDecl::reads`] is *not* consulted. A declared read set can lie; a
-/// footprint cannot. (Removing the field, and the parser clause behind it, is
-/// `DEVPLAN-effect.md` item D2.)
+/// [`EffectDecl`] carries no read set to consult: `DEVPLAN-effect.md` D2
+/// retired it, and the parser clause behind it, because a declared read set
+/// can lie while a footprint cannot.
 #[derive(Debug, Clone)]
 pub struct EffectUnderCheck {
     /// The effect's name and declared write set.

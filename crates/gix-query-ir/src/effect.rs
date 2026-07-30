@@ -15,7 +15,10 @@
 //! effect graph as built from *footprints*, and the pass follows the adoc: a
 //! write set is a promise about what an executor may advance, which no
 //! analysis can compute, while a read set is a property of a body that pass 7
-//! computes exactly. See [`EffectDecl::reads`].
+//! computes exactly. `DEVPLAN-effect.md` D2 retires the declared read set
+//! altogether -- there is no `EffectDecl::reads` field, so "an effect with a
+//! declared read set" is not a state this type can represent (`DEVPLAN.md`
+//! §2.12).
 //!
 //! A trigger body, gate, and `then` clause need the effect executor this crate
 //! deliberately does not build yet.
@@ -90,7 +93,7 @@ impl fmt::Display for Namespace {
     }
 }
 
-/// The declared read and write namespace sets for one effect.
+/// The declared write namespace set for one effect.
 ///
 /// Nothing here is executable: no trigger predicate, no gate, no `then`.
 /// Those belong to the effect executor
@@ -99,21 +102,18 @@ impl fmt::Display for Namespace {
 /// [`Namespace`] overlap between one effect's declared writes and the read
 /// set computed from another's body footprint is the edge the fork-bomb check
 /// walks.
+///
+/// There is deliberately no `reads` field. `DEVPLAN-effect.md` D2: a read set
+/// is a property of a body that the effect stratification pass computes from
+/// its footprint, never a promise a declaration can make (and a declaration
+/// can lie -- claim to read nothing while its trigger joins on every claim in
+/// the repository). Per `DEVPLAN.md` §2.12's illegal-states-unrepresentable
+/// philosophy, the fix is to not have the field: "an effect with a declared
+/// read set" is not a value this type can hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectDecl {
     /// The effect's name, unique within the program.
     pub name: Arc<str>,
-    /// Namespaces this effect's trigger *declares* it reads.
-    ///
-    /// Not consulted by anything. Reads are computed, not declared: the
-    /// effect stratification pass derives an effect's read set from its
-    /// body's footprint, because a declaration can claim to read nothing
-    /// while its trigger joins on every claim in the repository. This field
-    /// and the parser's `reads(...)` clause survive only so that existing
-    /// modules keep parsing; removing both is item D2 of
-    /// `DEVPLAN-effect.md`, and that is the ticket to close, not this
-    /// comment.
-    pub reads: Vec<Namespace>,
     /// Namespaces this effect -- or any executor it invokes -- may advance.
     pub writes: Vec<Namespace>,
     /// Where it was declared.
@@ -124,10 +124,9 @@ impl EffectDecl {
     /// A declaration with no source location, for programmatically built
     /// fixtures.
     #[must_use]
-    pub fn new(name: impl Into<Arc<str>>, reads: Vec<Namespace>, writes: Vec<Namespace>) -> Self {
+    pub fn new(name: impl Into<Arc<str>>, writes: Vec<Namespace>) -> Self {
         Self {
             name: name.into(),
-            reads,
             writes,
             span: Span::synthetic(),
         }

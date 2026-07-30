@@ -17,12 +17,7 @@ fn empty_program() -> gix_query_ir::CheckedProgram {
 
 fn effect(name: &str, writes: &[&str], bodies: &[&str]) -> EffectUnderCheck {
     EffectUnderCheck {
-        decl: EffectDecl::new(
-            name,
-            // A deliberately dishonest declared read set: nothing consults it.
-            vec![Namespace::new("refs/nothing")],
-            writes.iter().map(|w| Namespace::new(*w)).collect(),
-        ),
+        decl: EffectDecl::new(name, writes.iter().map(|w| Namespace::new(*w)).collect()),
         bodies: bodies.iter().map(|b| (*b).to_owned()).collect(),
     }
 }
@@ -77,9 +72,8 @@ fn a_chain_that_terminates_is_accepted() {
 }
 
 /// An effect whose footprint overlaps nobody's write set -- including its own
-/// -- is accepted. The declared read set here overlaps nothing either, but
-/// that is a coincidence: what makes this pass is that `refs/claims/*` and
-/// `refs/release/candidate` do not overlap.
+/// -- is accepted: `refs/claims/*` (the body's computed read set) and
+/// `refs/release/candidate` (the declared write set) do not overlap.
 #[test]
 fn a_footprint_overlapping_no_write_set_is_accepted() {
     let checked = empty_program();

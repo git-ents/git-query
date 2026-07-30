@@ -27,9 +27,9 @@
 //! lie: an effect whose declaration reads nothing while its `when` clause
 //! joins on `signer/2` still retriggers on every new claim. Reads therefore
 //! come from [`crate::pass7_footprint`], mapped to ref namespaces by
-//! [`read_namespaces`], and [`EffectDecl::reads`] is *ignored* by this pass.
-//! Retiring that field and the parser clause behind it is item D2 of
-//! `DEVPLAN-effect.md`; until then it parses, and nothing reads it.
+//! [`read_namespaces`]. `DEVPLAN-effect.md` D2 retired the declared read set
+//! and the parser's `reads(...)` clause behind it, so [`EffectDecl`] carries
+//! no read set for this pass to ignore in the first place.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -114,8 +114,8 @@ pub fn read_namespaces(footprint: &Footprint, registry: &Registry) -> ReadNamesp
 /// its parsed body.
 #[derive(Debug, Clone)]
 pub struct EffectReads {
-    /// The declaration. Only `name`, `writes`, and `span` are consulted;
-    /// `reads` is ignored (see this module's documentation, and D2).
+    /// The declaration -- `name`, `writes`, and `span` (see this module's
+    /// documentation, and D2).
     pub decl: EffectDecl,
     /// The ref namespaces the effect's body actually reads, from
     /// [`read_namespaces`] over its footprint.
@@ -270,7 +270,7 @@ mod tests {
     /// declared writes, computed reads.
     fn reads(name: &str, reads: Vec<Namespace>, writes: Vec<Namespace>) -> EffectReads {
         EffectReads {
-            decl: EffectDecl::new(name, Vec::new(), writes),
+            decl: EffectDecl::new(name, writes),
             reads,
         }
     }
@@ -374,12 +374,13 @@ mod tests {
         );
     }
 
-    /// A program whose effect declaration reads nothing relevant, but whose
-    /// trigger body's *footprint* lands inside its own write set. The old
-    /// declared-reads graph saw no edge here; the footprint graph sees a self
-    /// cycle. This is the soundness fix, so it is the test that matters most.
+    /// A program whose effect *declares* only a write set, and whose trigger
+    /// body's *footprint* lands inside that write set. The read edge exists
+    /// only because pass 7 computed it from `watch`'s body -- there is no
+    /// declared read set to have gotten it wrong, per D2 -- which is exactly
+    /// the property this pass exists to get right.
     #[test]
-    fn a_cycle_invisible_in_declared_reads_is_rejected() {
+    fn a_cycle_only_the_footprint_can_see_is_rejected() {
         let program = program_with_claim_reading_effect(vec![ns("refs/claims/*")]);
         let errors = run(&program);
         assert_eq!(errors.len(), 1, "{errors:?}");
@@ -399,9 +400,9 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
     }
 
-    /// `watch(M) :- signer(C, M).` plus `effect watch reads("refs/nothing")
-    /// writes(...)` -- a declared read set that overlaps nothing, over a body
-    /// that reads `refs/claims/*`.
+    /// `watch(M) :- signer(C, M).` plus `effect watch writes(...)` -- the
+    /// read set comes solely from the body's footprint (`refs/claims/*`,
+    /// since `signer/2` is claim-backed).
     fn program_with_claim_reading_effect(writes: Vec<Namespace>) -> Program {
         let mut module = gix_query_ir::Module::new("m");
         module.rules.push(Rule::new(
@@ -411,9 +412,7 @@ mod tests {
                 vec![Term::var("C"), Term::var("M")],
             ))],
         ));
-        module
-            .effects
-            .push(EffectDecl::new("watch", vec![ns("refs/nothing")], writes));
+        module.effects.push(EffectDecl::new("watch", writes));
         let mut program = Program::new();
         program.add_module(module);
         program

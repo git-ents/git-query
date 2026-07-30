@@ -275,28 +275,34 @@ impl Parser {
             )
     }
 
-    /// Parse an effect declaration: `effect NAME [reads(NS, ...)]
-    /// [writes(NS, ...)].`, in either order, each clause at most once.
+    /// Parse an effect declaration: `effect NAME [writes(NS, ...)].`, each
+    /// clause at most once.
     ///
     /// This is the minimal surface `ARCHITECTURE.md`'s git-effect section
     /// needs before the rest of the effect subsystem exists: a name plus its
-    /// declared read and write namespace sets, nothing executable. `NS` is a
-    /// quoted string rather than a new refname token, since [`Term::Const`]
-    /// already carries arbitrary text and a namespace pattern needs no
-    /// grammar beyond that.
+    /// declared write namespace set, nothing executable. `NS` is a quoted
+    /// string rather than a new refname token, since [`Term::Const`] already
+    /// carries arbitrary text and a namespace pattern needs no grammar beyond
+    /// that.
+    ///
+    /// There is no `reads(...)` clause: `DEVPLAN-effect.md` D2 retired it, an
+    /// effect's read set being computed from its body's footprint rather than
+    /// declared. A module that still writes one fails here with
+    /// [`ParseError::RetiredReadsClause`] rather than falling through to
+    /// [`Self::expect`]'s generic "expected '.'" once `reads` fails to match
+    /// any grammar production -- the whole point of retiring the clause
+    /// loudly is that an old module's author gets told what changed, not a
+    /// confusing parse error.
     fn effect(&mut self) -> Result<EffectDecl, ()> {
         let start = self.advance(); // `effect`
         let (name, _name_span) = self.predicate_name()?;
-        let mut reads: Option<Vec<Namespace>> = None;
         let mut writes: Option<Vec<Namespace>> = None;
         loop {
             if self.at_keyword("reads") {
-                if reads.is_some() {
-                    self.expected("at most one 'reads' clause", &self.peek().clone());
-                    return Err(());
-                }
-                self.advance();
-                reads = Some(self.namespace_list()?);
+                let tok = self.peek().clone();
+                self.errors
+                    .push(ParseError::RetiredReadsClause { span: tok.span });
+                return Err(());
             } else if self.at_keyword("writes") {
                 if writes.is_some() {
                     self.expected("at most one 'writes' clause", &self.peek().clone());
@@ -311,7 +317,6 @@ impl Parser {
         let dot = self.expect(TokenKind::Dot, "'.'")?;
         Ok(EffectDecl {
             name: name.into(),
-            reads: reads.unwrap_or_default(),
             writes: writes.unwrap_or_default(),
             span: start.span.join(dot.span),
         })
@@ -590,33 +595,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_effect_declaration_parses_its_read_and_write_sets() {
+    fn an_effect_declaration_parses_its_write_set() {
         let module = parse_module(
             "m",
-            r#"effect build_on_push reads("refs/heads/main") writes("refs/claims/action/kiln/*")."#,
+            r#"effect build_on_push writes("refs/claims/action/kiln/*")."#,
         )
         .expect("valid effect declaration");
         assert_eq!(module.effects.len(), 1);
         let e = &module.effects[0];
         assert_eq!(&*e.name, "build_on_push");
-        assert_eq!(e.reads, vec![Namespace::new("refs/heads/main")]);
         assert_eq!(e.writes, vec![Namespace::new("refs/claims/action/kiln/*")]);
     }
 
     #[test]
-    fn an_effect_with_no_clauses_declares_empty_sets() {
+    fn an_effect_with_no_clauses_declares_an_empty_write_set() {
         let module = parse_module("m", "effect noop.").expect("valid effect declaration");
         assert_eq!(module.effects.len(), 1);
-        assert!(module.effects[0].reads.is_empty());
         assert!(module.effects[0].writes.is_empty());
-    }
-
-    #[test]
-    fn writes_before_reads_is_accepted() {
-        let module = parse_module("m", r#"effect e writes("refs/out") reads("refs/in")."#)
-            .expect("valid effect declaration");
-        assert_eq!(module.effects[0].reads, vec![Namespace::new("refs/in")]);
-        assert_eq!(module.effects[0].writes, vec![Namespace::new("refs/out")]);
     }
 
     #[test]
@@ -628,10 +623,32 @@ mod tests {
         assert_eq!(&*module.rules[0].head.predicate.name, "effect");
     }
 
+    /// D2 retires `reads(...)` entirely -- not just duplicates -- because an
+    /// effect's read set is computed from its body's footprint, never
+    /// declared. A module written before D2 must fail loudly, naming the
+    /// retirement, rather than tripping a generic "expected '.'" once
+    /// `reads` fails to match any surviving grammar production.
     #[test]
-    fn a_duplicate_reads_clause_is_rejected() {
-        let err = parse_module("m", r#"effect e reads("refs/a") reads("refs/b")."#)
-            .expect_err("duplicate reads clause");
-        assert!(!err.is_empty());
+    fn a_reads_clause_anywhere_is_rejected_with_the_retired_diagnostic() {
+        let err =
+            parse_module("m", r#"effect e reads("refs/a")."#).expect_err("retired reads clause");
+        assert!(
+            err.iter()
+                .any(|e| matches!(e, ParseError::RetiredReadsClause { .. })),
+            "{err:?}"
+        );
+    }
+
+    /// The clause is rejected wherever it appears, not only in first
+    /// position: `writes(...)` still parses, then `reads(...)` still fails.
+    #[test]
+    fn a_reads_clause_after_writes_is_also_rejected() {
+        let err = parse_module("m", r#"effect e writes("refs/out") reads("refs/in")."#)
+            .expect_err("retired reads clause");
+        assert!(
+            err.iter()
+                .any(|e| matches!(e, ParseError::RetiredReadsClause { .. })),
+            "{err:?}"
+        );
     }
 }
