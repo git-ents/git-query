@@ -48,8 +48,8 @@ enum TrailerRelation {
     /// until `git-attest`'s envelope exists, DELTA X1).
     Rev,
     /// `loc/2`, `Location`-typed -- a `rebind-pin` claim's pinned location,
-    /// formatted exactly as `bind/5`'s own `Loc` column
-    /// (`"<path>:<start>-<end>"`), so `bind`'s pin leg can read it back
+    /// formatted exactly as `cand/5`'s own `Loc` column
+    /// (`"<path>:<start>-<end>"`), so `cand`'s pin leg can read it back
     /// verbatim rather than reassembling it from separate fields.
     Loc,
 }
@@ -244,7 +244,7 @@ pub(crate) fn trailer_facts<'a>(
 }
 
 /// Every `Loc:` trailer value on a `rebind-pin` claim naming `anchor` and
-/// pinned exactly at `rev` -- `bind`'s pin leg (ARCHITECTURE.md: "pin
+/// pinned exactly at `rev` -- `cand`'s pin leg (ARCHITECTURE.md: "pin
 /// dominates the lattice"), at confidence 1.0 by construction wherever this
 /// returns a non-empty list.
 ///

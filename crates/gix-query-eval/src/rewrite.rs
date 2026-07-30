@@ -789,7 +789,7 @@ mod tests {
             Rule::new(
                 Atom::new("out", vec![Term::var("Loc")]),
                 vec![Literal::Builtin(Atom::new(
-                    "bind",
+                    "cand",
                     vec![
                         Term::var("Anchor"),
                         Term::var("Rev"),
@@ -801,7 +801,7 @@ mod tests {
             ),
             &[],
         );
-        // Hand-fix the adornment: bind is (+,+,-,-,-).
+        // Hand-fix the adornment: cand is (+,+,-,-,-).
         let checked_program = {
             let id = RuleId(0);
             f.adorn(
@@ -819,12 +819,12 @@ mod tests {
             vec![Var::new("B")],
         );
         let rewritten = rewrite(&checked_program, &goal);
-        let bind = PredicateKey::new("bind", 5);
+        let cand = PredicateKey::new("cand", 5);
         assert!(
             rewritten
                 .demand
                 .iter()
-                .any(|d| d.base == bind && d.kind == DemandKind::Builtin)
+                .any(|d| d.base == cand && d.kind == DemandKind::Builtin)
         );
     }
 

@@ -29,20 +29,15 @@ pub enum ValueType {
     Int,
     /// A bare keyword: a claim kind, a verdict.
     Symbol,
-    /// `bind/5`'s third column: a path and byte span, encoded as
-    /// `"<path>:<start>-<end>"` -- one atomic term, since the value domain
-    /// has no tuple type to hold `(path, start, end)` as three fields.
+    /// `cand/5`'s and `bind/5`'s third column: a path and byte span, encoded
+    /// as `"<path>:<start>-<end>"` -- one atomic term, since the value
+    /// domain has no tuple type to hold `(path, start, end)` as three
+    /// fields.
     Location,
-    /// `bind/5`'s fourth column: which oracle contributed a candidate --
-    /// `pin`, or one of `gix_anchor::Oracle`'s three named oracles.
+    /// `cand/5`'s and `bind/5`'s fourth column: which oracle contributed a
+    /// candidate -- `pin`, or one of `gix_anchor::Oracle`'s three named
+    /// oracles.
     Oracle,
-    /// `bind/5`'s fifth column: an oracle's own confidence in a candidate,
-    /// `0.0..=1.0`, formatted to four decimal places (`"0.9300"`) so two
-    /// equal confidences are the same term rather than differing in
-    /// float-formatting noise. Not ordered by the comparison builtins --
-    /// max-selection over it is `bind`'s own aggregation stratum, not a rule
-    /// author comparing it with `>`.
-    Confidence,
 }
 
 impl ValueType {
@@ -60,7 +55,6 @@ impl ValueType {
             Self::Symbol => "symbol",
             Self::Location => "location",
             Self::Oracle => "oracle",
-            Self::Confidence => "confidence",
         }
     }
 
@@ -368,7 +362,22 @@ impl Registry {
         Self::default()
     }
 
-    /// The host registry: the repo-backed EDB predicates and every builtin.
+    /// The host registry: the repo-backed EDB predicates and every builtin,
+    /// plus one pre-declared `pub` IDB entry for `bind/5`.
+    ///
+    /// `bind/5` is "the only user-facing resolution predicate"
+    /// (ARCHITECTURE.md) and must resolve bare, unqualified, exactly like
+    /// `commit/1` or `anchor/1` -- never `core.bind`. It is defined by a
+    /// rule (`gix-query-rules::assemble`'s always-present core module, over
+    /// `cand/5`), not a builtin, so it cannot enter through
+    /// [`builtins()`] the way `cand` does; pre-declaring it here instead is
+    /// exactly the pattern [`crate::check`](../../gix_query_check/fn.check.html)'s
+    /// own doc comment already names as harmless: "predicates \[a
+    /// pre-extended registry\] already carries are treated as pre-declared
+    /// host data, exactly like `commit/1`." Assembly's `qualify` step then
+    /// sees `bind` already resolvable and leaves it unqualified, while
+    /// everything else the core module defines (its own `dominated` helper)
+    /// still gets namespaced normally.
     ///
     /// Rule modules add their own derived predicates on top of this; nothing
     /// here is redefinable.
@@ -381,6 +390,8 @@ impl Registry {
         for e in builtins() {
             r.builtins.insert(e.key.clone(), e);
         }
+        let bind = PredicateEntry::idb(PredicateKey::new("bind", 5), Visibility::Public);
+        r.predicates.insert(bind.key.clone(), bind);
         debug_assert!(r.validate().is_ok(), "the host registry is self-consistent");
         r
     }
@@ -691,17 +702,26 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
 pub fn builtins() -> Vec<BuiltinEntry> {
     use ArgType::{AnyScalar, Exact, SameAsArg};
     use Mode::{Bound, Free};
-    use ValueType::{Confidence, Int, Location, Oid, Oracle, Rev};
+    use ValueType::{Int, Location, Oid, Oracle, Rev};
 
-    let bind_types = vec![
+    // `cand/5`'s fifth column, confidence, is plain `Int`: basis points on
+    // `0..=10000` (four decimal digits of an oracle's `0.0..=1.0` score),
+    // never a formatted string. A rule's own `bind/5` (`gix-query-rules`'s
+    // always-assembled core module) selects the maximum by `!dominated(...)`
+    // over a genuine `>` comparison -- ARCHITECTURE.md's aggregation stratum,
+    // expressed in the rule language, not in this crate -- and that only
+    // orders correctly if the value it compares is actually numeric. A
+    // fixed-width zero-padded string would happen to sort the same way, but
+    // "happens to" is exactly the coincidence a real ordered type avoids.
+    let cand_types = vec![
         Exact(Oid),
         Exact(Rev),
         Exact(Location),
         Exact(Oracle),
-        Exact(Confidence),
+        Exact(Int),
     ];
-    let bind_modes = ModeVector::new(vec![Bound, Bound, Free, Free, Free]);
-    let bind_props = BuiltinProps {
+    let cand_modes = ModeVector::new(vec![Bound, Bound, Free, Free, Free]);
+    let cand_props = BuiltinProps {
         total: true,
         deterministic: true,
         pure: true,
@@ -711,17 +731,17 @@ pub fn builtins() -> Vec<BuiltinEntry> {
     };
 
     let mut out = vec![BuiltinEntry {
-        key: PredicateKey::new("bind", 5),
-        types: bind_types,
-        modes: bind_modes,
-        props: bind_props,
+        key: PredicateKey::new("cand", 5),
+        types: cand_types,
+        modes: cand_modes,
+        props: cand_props,
         // Every candidate (pin, or one of the three named oracles) is a
         // pure function of the anchor's own content and the ref state
         // `Rev` resolves to -- unlike the old `bind_fuzzy`, nothing here
         // silently degrades based on ambient state such as whether
         // garbage collection has run.
         gate_safe: true,
-        doc: "resolve an anchor onto a revision: pin and the oracle chain, one confidence lattice",
+        doc: "every candidate location an anchor might sit at on a revision: pin and the oracle chain, unselected",
     }];
 
     for op in CompareOp::all() {
@@ -870,13 +890,27 @@ mod tests {
     }
 
     #[test]
-    fn bind_is_gate_safe() {
+    fn cand_is_gate_safe() {
         let r = Registry::host();
         assert!(
-            r.builtin(&PredicateKey::new("bind", 5))
-                .expect("bind")
+            r.builtin(&PredicateKey::new("cand", 5))
+                .expect("cand")
                 .gate_safe
         );
+    }
+
+    /// `bind/5` is pre-declared, `pub`, and derived -- never a builtin --
+    /// exactly the shape `gix-query-rules`'s always-assembled core module
+    /// needs to define it unqualified.
+    #[test]
+    fn bind_is_a_predeclared_public_derived_predicate() {
+        let r = Registry::host();
+        assert!(r.builtin(&PredicateKey::new("bind", 5)).is_none());
+        let e = r
+            .predicate(&PredicateKey::new("bind", 5))
+            .expect("bind is pre-declared");
+        assert!(!e.class.is_edb());
+        assert_eq!(e.visibility, Visibility::Public);
     }
 
     #[test]
@@ -902,8 +936,8 @@ mod tests {
         let mut a = Registry::host();
         let before = a.builtin_digest_input();
         let mut entry = a
-            .builtin(&PredicateKey::new("bind", 5))
-            .expect("bind")
+            .builtin(&PredicateKey::new("cand", 5))
+            .expect("cand")
             .clone();
         entry.props.version += 1;
         a.insert_builtin(entry);

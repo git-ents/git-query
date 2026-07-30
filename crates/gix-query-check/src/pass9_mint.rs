@@ -58,7 +58,7 @@ mod tests {
 
     fn bind_call() -> Literal {
         Literal::Builtin(Atom::new(
-            "bind",
+            "cand",
             vec![
                 Term::var("A"),
                 Term::var("Rev"),

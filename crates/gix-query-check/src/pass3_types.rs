@@ -341,7 +341,7 @@ mod tests {
                 Atom::new("uses", vec![Term::var("O")]),
                 vec![
                     Literal::Builtin(Atom::new(
-                        "bind",
+                        "cand",
                         vec![
                             Term::var("A"),
                             Term::var("Rev"),

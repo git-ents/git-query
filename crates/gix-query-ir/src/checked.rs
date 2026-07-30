@@ -237,7 +237,7 @@ mod tests {
     }
 
     /// A non-gate-safe builtin registered only in this test's own registry --
-    /// `bind` itself is gate-safe now that every candidate (pin, or one of
+    /// `cand` itself is gate-safe now that every candidate (pin, or one of
     /// the three named oracles) is a pure function of content and ref
     /// state, so a synthetic stand-in is what exercises the gate-safety
     /// check instead.
@@ -248,8 +248,8 @@ mod tests {
     fn registry_with_unsafe_builtin() -> Registry {
         let mut r = Registry::host();
         let mut entry = r
-            .builtin(&PredicateKey::new("bind", 5))
-            .expect("bind")
+            .builtin(&PredicateKey::new("cand", 5))
+            .expect("cand")
             .clone();
         entry.key = unsafe_builtin_key();
         entry.gate_safe = false;

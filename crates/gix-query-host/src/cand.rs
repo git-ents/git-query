@@ -1,26 +1,42 @@
-//! [`RepoBuiltins`]: `bind`, the one user-facing resolution predicate
-//! (ARCHITECTURE.md: "`bind/5` is the only user-facing resolution").
+//! [`RepoBuiltins`]: `cand`, every candidate location an anchor might sit at
+//! on a revision, unselected.
 //!
-//! `bind(A, Rev, Loc, O, C)` composes two legs into one confidence lattice:
-//! pin ([`crate::claim::rebind_pin_locs`], at confidence 1.0 by
-//! construction) and `gix-anchor`'s oracle chain (`op_log`, `diff_trace`,
-//! `fingerprint`). [`candidates`] collects every leg's rows separately --
-//! "each oracle contributes candidates as separate base facts" -- and
-//! [`select_max`] is selection's own step, run once over whatever
-//! [`candidates`] collected: ARCHITECTURE.md's aggregation stratum, kept as
-//! a distinct function rather than threaded into candidate generation, so a
-//! future candidate source only ever adds to [`candidates`], never changes
-//! how a winner is picked. `gix-anchor` applies no threshold anywhere
-//! (`gix_anchor::oracle`'s own doc comment); neither does this: `bind`
-//! reports the maximum, and an admission threshold on top of it is a rule's
-//! parameter, not a builtin's.
+//! `cand(A, Rev, Loc, O, C)` is monotone -- it only ever adds rows, never
+//! retracts one candidate because a better one turned up -- so semi-naive
+//! incrementality holds for it (ARCHITECTURE.md: "No negation: candidate
+//! generation is monotone"). Selection is a *rule*, not this builtin:
+//! `bind/5` (`gix-query-rules::assemble`'s always-present core module) reads
+//! `cand` back and picks the maximum by `!dominated(...)` over a genuine `>`
+//! comparison, in its own stratum, exactly as ARCHITECTURE.md writes it. That
+//! split is also what keeps a rule able to reach a sub-maximal candidate at
+//! all (ARCHITECTURE.md: "the confidence threshold is a rule parameter here,
+//! not anchor behavior") -- a threshold or an orphaning rule can only be
+//! written against a relation the rule language can see, and a builtin that
+//! pre-selected the winner internally would have thrown every other
+//! candidate away before any rule got a look at it.
 //!
-//! `Loc` is one atomic term, `"<path>:<start>-<end>"`
-//! (`ValueType::Location`): the value domain has no tuple type to hold a
-//! path and a byte span as separate fields. Formatting it this way also
-//! matches `gix_anchor::RebindPin`'s own `(path, span)` payload shape, so
-//! the pin leg reads a claim's `Loc:` trailer back verbatim rather than
-//! reassembling it from separate columns.
+//! `cand` composes two legs: pin ([`crate::claim::rebind_pin_locs`], at
+//! confidence 1.0 by construction) and `gix-anchor`'s oracle chain
+//! (`op_log`, `diff_trace`, `fingerprint`) -- "each oracle contributes
+//! candidates as separate base facts" (ARCHITECTURE.md), so every candidate
+//! becomes its own row here rather than being folded together.
+//!
+//! `Loc` is one atomic term, `"<path>:<start>-<end>"` (`ValueType::Location`):
+//! the value domain has no tuple type to hold a path and a byte span as
+//! separate fields. Formatting it this way also matches
+//! `gix_anchor::RebindPin`'s own `(path, span)` payload shape, so the pin leg
+//! reads a claim's `Loc:` trailer back verbatim rather than reassembling it
+//! from separate columns.
+//!
+//! `C` is a plain `Int`: basis points on `0..=10000` (an oracle's own
+//! `0.0..=1.0` confidence, times `10000`, rounded), never a formatted
+//! string. `bind`'s rule compares it with `>`, and only a genuinely ordered
+//! numeric value orders correctly under every possible representation
+//! change -- a fixed-width zero-padded decimal string would happen to sort
+//! the same way today, but "happens to" is exactly the coincidence a real
+//! integer avoids (see `gix-query-eval`'s
+//! `bind_selects_the_maximum_confidence_not_the_lexicographically_greatest`
+//! for the concrete case a naive string comparison gets backwards).
 //!
 //! `op_log` is called with no [`gix_anchor::OpLogSource`]: no operation log
 //! exists yet anywhere in the product family (DELTA X6), so it is
@@ -35,13 +51,17 @@ use gix_query_ir::{Bindings, Builtin, HostError, PredicateKey, Value};
 use crate::claim::rebind_pin_locs;
 use crate::util::{backend, backend_msg, parse_oid};
 
-/// A [`Builtin`] over `bind`, over one open repository.
+/// Basis points per unit of confidence: `cand`'s `C` column is
+/// `round(confidence * CONFIDENCE_SCALE)`, an `i64` on `0..=CONFIDENCE_SCALE`.
+const CONFIDENCE_SCALE: f64 = 10_000.0;
+
+/// A [`Builtin`] over `cand`, over one open repository.
 pub struct RepoBuiltins<'r> {
     repo: &'r gix::Repository,
 }
 
 impl<'r> RepoBuiltins<'r> {
-    /// The `bind` builtin over `repo`.
+    /// The `cand` builtin over `repo`.
     #[must_use]
     pub fn new(repo: &'r gix::Repository) -> Self {
         Self { repo }
@@ -50,7 +70,7 @@ impl<'r> RepoBuiltins<'r> {
 
 impl Builtin for RepoBuiltins<'_> {
     fn provides(&self, key: &PredicateKey) -> bool {
-        key.arity == 5 && key.name.as_ref() == "bind"
+        key.arity == 5 && key.name.as_ref() == "cand"
     }
 
     fn call(
@@ -73,14 +93,15 @@ impl Builtin for RepoBuiltins<'_> {
         };
         let target_tree = target_commit.tree().map_err(|error| backend(key, error))?;
 
-        let all = candidates(self.repo, key, anchor_oid, rev_oid, &target_tree)?;
-        for (label, confidence, loc) in select_max(&all) {
+        for (label, confidence, loc) in
+            candidates(self.repo, key, anchor_oid, rev_oid, &target_tree)?
+        {
             let tuple = vec![
                 anchor_v.clone(),
                 rev_v.clone(),
-                Value::sym(loc.clone()),
-                Value::sym(*label),
-                Value::sym(format_confidence(*confidence)),
+                Value::sym(loc),
+                Value::sym(label),
+                Value::Int(confidence),
             ];
             if satisfies(bound, &tuple) {
                 out.push(tuple);
@@ -90,13 +111,14 @@ impl Builtin for RepoBuiltins<'_> {
     }
 }
 
-/// One candidate: its oracle label, its confidence, and its `Loc` term.
-type Row = (&'static str, f64, String);
+/// One candidate: its oracle label, its confidence in basis points
+/// (`0..=10_000`), and its `Loc` term.
+type Row = (&'static str, i64, String);
 
 /// Every candidate `anchor_oid` has at `rev_oid`, from every leg of the
 /// lattice -- pin, then the oracle chain in `gix_anchor::oracle`'s own
-/// highest-to-lowest fidelity order. Not itself the answer: [`select_max`]
-/// picks the winner from what this returns.
+/// highest-to-lowest fidelity order. Unselected: this is `cand`'s whole
+/// extension for `(anchor_oid, rev_oid)`, not an answer.
 fn candidates(
     repo: &gix::Repository,
     key: &PredicateKey,
@@ -107,7 +129,7 @@ fn candidates(
     let mut out = Vec::new();
 
     for loc in rebind_pin_locs(repo, key, anchor_oid, rev_oid)? {
-        out.push(("pin", 1.0, loc));
+        out.push(("pin", basis_points(1.0), loc));
     }
 
     if let Some(anchor) = crate::anchor::lookup(repo, key, anchor_oid)? {
@@ -132,27 +154,18 @@ fn candidates(
     Ok(out)
 }
 
-/// Every row at the maximum confidence [`candidates`] collected -- empty
-/// when `candidates` itself was empty. Ties (two candidates at the same
-/// maximum) all survive: `bind` reports every one, and it is a rule's job
-/// (the ambiguity lint, `query-and-rules.adoc`) to decide what to do with
-/// more than one.
-fn select_max(all: &[Row]) -> Vec<&Row> {
-    let Some(max) = all.iter().map(|(_, c, _)| *c).reduce(f64::max) else {
-        return Vec::new();
-    };
-    all.iter().filter(|(_, c, _)| *c == max).collect()
+/// `confidence` (`0.0..=1.0`), scaled to basis points and rounded to the
+/// nearest integer.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "confidence is 0.0..=1.0, so the scaled result always fits an i64"
+)]
+fn basis_points(confidence: f64) -> i64 {
+    (confidence * CONFIDENCE_SCALE).round() as i64
 }
 
-/// `confidence`, formatted to four decimal places so two equal confidences
-/// are always the same [`Value::Sym`] rather than differing in
-/// float-formatting noise.
-fn format_confidence(confidence: f64) -> String {
-    format!("{confidence:.4}")
-}
-
-/// One [`Candidate`] as a [`Row`]: its oracle label, its confidence
-/// verbatim, and its `Loc` term -- `"<path>:<start>-<end>"`, resolving a
+/// One [`Candidate`] as a [`Row`]: its oracle label, its confidence in basis
+/// points, and its `Loc` term -- `"<path>:<start>-<end>"`, resolving a
 /// `None` span (a whole-file match) against the target blob's own length.
 fn labeled(
     repo: &gix::Repository,
@@ -171,7 +184,7 @@ fn labeled(
     };
     Ok((
         label,
-        candidate.confidence,
+        basis_points(candidate.confidence),
         format!("{}:{start}-{end}", candidate.path),
     ))
 }
@@ -221,7 +234,7 @@ mod tests {
         range.map(|n| format!("line {n}\n")).collect()
     }
 
-    fn bind_args(anchor: &str, rev: &str) -> Vec<Option<Value>> {
+    fn cand_args(anchor: &str, rev: &str) -> Vec<Option<Value>> {
         vec![
             Some(Value::sym(anchor)),
             Some(Value::sym(rev)),
@@ -231,16 +244,16 @@ mod tests {
         ]
     }
 
-    fn row(out: &[Vec<Value>], i: usize) -> (String, String, String) {
+    fn row(out: &[Vec<Value>], i: usize) -> (String, String, i64) {
         let r = &out[i];
         (
             r[2].as_sym().expect("loc").to_owned(),
             r[3].as_sym().expect("oracle").to_owned(),
-            r[4].as_sym().expect("confidence").to_owned(),
+            r[4].as_int().expect("confidence"),
         )
     }
 
-    /// `provides` refuses an arity-5 key that is not named `bind`; `call`
+    /// `provides` refuses an arity-5 key that is not named `cand`; `call`
     /// must refuse the same key rather than silently running it.
     #[test]
     fn call_refuses_a_key_provides_would_also_refuse() {
@@ -249,27 +262,27 @@ mod tests {
         f.commit_file("a.txt", "a\n", "first");
         let repo = f.open();
 
-        let key = PredicateKey::new("bind_other", 5);
+        let key = PredicateKey::new("cand_other", 5);
         let builtins = RepoBuiltins::new(&repo);
         assert!(!builtins.provides(&key));
 
         let mut out = Vec::new();
         let err = builtins
-            .call(&key, &bind_args("00", "00"), &mut out)
+            .call(&key, &cand_args("00", "00"), &mut out)
             .expect_err("call must refuse a key provides refuses");
         assert!(matches!(err, HostError::NoProvider(_)));
     }
 
-    /// `bind` is `(+Anchor, +Rev, -Loc, -O, -C)` -- both leading arguments
+    /// `cand` is `(+Anchor, +Rev, -Loc, -O, -C)` -- both leading arguments
     /// required bound. A free anchor must be refused rather than treated as
     /// "no rows".
     #[test]
-    fn bind_refuses_a_free_anchor() {
+    fn cand_refuses_a_free_anchor() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = Fixture::init(dir.path().join("r"));
         let head = f.commit_file("a.txt", "a\n", "first");
         let repo = f.open();
-        let key = PredicateKey::new("bind", 5);
+        let key = PredicateKey::new("cand", 5);
 
         let mut out = Vec::new();
         let err = RepoBuiltins::new(&repo)
@@ -278,12 +291,12 @@ mod tests {
                 &[None, Some(Value::sym(head)), None, None, None],
                 &mut out,
             )
-            .expect_err("bind must refuse a free anchor");
+            .expect_err("cand must refuse a free anchor");
         assert!(matches!(err, HostError::UnsupportedMode { .. }));
     }
 
     #[test]
-    fn bind_reports_a_diff_trace_candidate_for_a_pure_rename() {
+    fn cand_reports_a_diff_trace_candidate_for_a_pure_rename() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = Fixture::init(dir.path().join("r"));
         f.write("file.txt", &numbered(1..=10));
@@ -304,25 +317,27 @@ mod tests {
         let repo = f.open();
         let head = f.rev_parse("HEAD");
 
-        let key = PredicateKey::new("bind", 5);
+        let key = PredicateKey::new("cand", 5);
         let mut out = Vec::new();
         RepoBuiltins::new(&repo)
-            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .call(&key, &cand_args(&id.to_string(), &head), &mut out)
             .expect("call");
         assert_eq!(out.len(), 1);
         let (loc, oracle, confidence) = row(&out, 0);
         assert_eq!(oracle, "diff_trace");
-        assert_eq!(confidence, "1.0000");
+        assert_eq!(confidence, 10_000);
         assert!(loc.starts_with("moved.txt:"));
     }
 
-    /// A pin claim at confidence 1.0 wins over a lower-confidence
-    /// `fingerprint` candidate -- ARCHITECTURE.md: "a pin dominates the
-    /// lattice at 1.0 by construction". The anchored range itself is
-    /// edited, so `diff_trace` reports nothing and `fingerprint` is the
-    /// only oracle candidate, at less than 1.0.
+    /// `cand` reports the pin candidate *and* the lower-confidence oracle
+    /// candidate side by side -- unselected, both survive, and it is
+    /// `bind`'s rule, not this builtin, that picks pin at confidence 1.0
+    /// over it (ARCHITECTURE.md: "a pin dominates the lattice at 1.0 by
+    /// construction"). The anchored range itself is edited, so `diff_trace`
+    /// reports nothing and `fingerprint` is the only oracle candidate, at
+    /// less than 1.0.
     #[test]
-    fn bind_pin_beats_a_lower_confidence_oracle_candidate() {
+    fn cand_reports_the_pin_and_the_lower_confidence_oracle_candidate_side_by_side() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = Fixture::init(dir.path().join("r"));
         f.write("file.txt", &numbered(1..=10));
@@ -356,17 +371,17 @@ mod tests {
         let repo = f.open();
         let head = f.rev_parse("HEAD");
 
-        // Confirm the setup: without a pin, only a sub-1.0 fingerprint
+        // Confirm the setup: without a pin, only a sub-maximum fingerprint
         // candidate is on offer.
-        let key = PredicateKey::new("bind", 5);
+        let key = PredicateKey::new("cand", 5);
         let mut out = Vec::new();
         RepoBuiltins::new(&repo)
-            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .call(&key, &cand_args(&id.to_string(), &head), &mut out)
             .expect("call");
         assert_eq!(out.len(), 1);
         let (_, oracle, confidence) = row(&out, 0);
         assert_eq!(oracle, "fingerprint");
-        assert_ne!(confidence, "1.0000", "setup: the edit must cost confidence");
+        assert_ne!(confidence, 10_000, "setup: the edit must cost confidence");
 
         let pin_message = format!(
             "rebind\n\nKind: rebind-pin\nTarget: {id}\nRev: {head}\nLoc: file.txt:200-260\n"
@@ -377,64 +392,35 @@ mod tests {
 
         let mut out = Vec::new();
         RepoBuiltins::new(&repo)
-            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .call(&key, &cand_args(&id.to_string(), &head), &mut out)
             .expect("call");
-        assert_eq!(out.len(), 1, "the pin alone must survive selection");
-        let (loc, oracle, confidence) = row(&out, 0);
-        assert_eq!(oracle, "pin");
-        assert_eq!(confidence, "1.0000");
-        assert_eq!(loc, "file.txt:200-260");
-    }
-
-    /// Two candidates at the same maximum confidence both survive
-    /// selection -- an untouched file and a byte-identical copy both trace
-    /// exactly via `diff_trace`, but `fingerprint` runs regardless (the
-    /// oracle chain is not short-circuited by an earlier oracle's success)
-    /// and finds the same, unmoved window at its own confidence 1.0. Both
-    /// tie at the maximum, and `bind` reports both rather than arbitrarily
-    /// picking one.
-    #[test]
-    fn bind_reports_every_candidate_tied_at_the_maximum() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let f = Fixture::init(dir.path().join("r"));
-        f.write("file.txt", &numbered(1..=10));
-        f.git(&["add", "-A"]);
-        f.commit("one");
-        let repo = f.open();
-        let anchor = gix_anchor::capture(
-            &repo,
-            "HEAD",
-            "file.txt",
-            Some(gix_anchor::LineRange { start: 3, end: 4 }),
-        )
-        .expect("capture");
-        let id = crate::anchor::attach(&repo, anchor).expect("attach");
-        let head = f.rev_parse("HEAD");
-
-        let key = PredicateKey::new("bind", 5);
-        let mut out = Vec::new();
-        RepoBuiltins::new(&repo)
-            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
-            .expect("call");
-        assert_eq!(out.len(), 2, "diff_trace and fingerprint both agree here");
-        let mut oracles: Vec<String> = out.iter().map(|_| String::new()).collect();
-        for (i, oracle) in oracles.iter_mut().enumerate() {
-            let (loc, o, confidence) = row(&out, i);
-            assert_eq!(confidence, "1.0000");
-            assert!(loc.starts_with("file.txt:"));
-            *oracle = o;
+        assert_eq!(
+            out.len(),
+            2,
+            "cand does not select; both candidates survive"
+        );
+        let mut oracles: Vec<String> = Vec::new();
+        let mut pin_confidence = None;
+        for i in 0..out.len() {
+            let (loc, oracle, confidence) = row(&out, i);
+            if oracle == "pin" {
+                pin_confidence = Some(confidence);
+                assert_eq!(loc, "file.txt:200-260");
+            }
+            oracles.push(oracle);
         }
         oracles.sort();
-        assert_eq!(oracles, vec!["diff_trace", "fingerprint"]);
+        assert_eq!(oracles, vec!["fingerprint", "pin"]);
+        assert_eq!(pin_confidence, Some(10_000));
     }
 
     /// A deleted anchor with no pin and an anchor commit still reachable:
     /// `diff_trace` reports nothing (the path is gone) and `fingerprint`
-    /// finds no surviving window, so `bind` answers with no rows at all --
+    /// finds no surviving window, so `cand` answers with no rows at all --
     /// never a sentinel value, since there is no `Blob` column to sentinel
     /// any more.
     #[test]
-    fn bind_answers_no_rows_when_nothing_resolves() {
+    fn cand_answers_no_rows_when_nothing_resolves() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = Fixture::init(dir.path().join("r"));
         f.commit_file("file.txt", "a\nb\nc\n", "one");
@@ -447,49 +433,49 @@ mod tests {
         let repo = f.open();
         let head = f.rev_parse("HEAD");
 
-        let key = PredicateKey::new("bind", 5);
+        let key = PredicateKey::new("cand", 5);
         let mut out = Vec::new();
         RepoBuiltins::new(&repo)
-            .call(&key, &bind_args(&id.to_string(), &head), &mut out)
+            .call(&key, &cand_args(&id.to_string(), &head), &mut out)
             .expect("call");
         assert!(out.is_empty());
     }
 
-    /// `bind` answers with no rows -- never an error -- for an anchor id
+    /// `cand` answers with no rows -- never an error -- for an anchor id
     /// that resolves to nothing (`refs/anchors/*` has no such ref) and has
     /// no pin claim either: a caller may name any oid, and most will not be
     /// anchors.
     #[test]
-    fn bind_answers_no_rows_for_an_unregistered_anchor_id() {
+    fn cand_answers_no_rows_for_an_unregistered_anchor_id() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = Fixture::init(dir.path().join("r"));
         let head = f.commit_file("a.txt", "a\n", "first");
         let repo = f.open();
-        let key = PredicateKey::new("bind", 5);
+        let key = PredicateKey::new("cand", 5);
         let mut out = Vec::new();
         RepoBuiltins::new(&repo)
-            .call(&key, &bind_args(&"0".repeat(40), &head), &mut out)
+            .call(&key, &cand_args(&"0".repeat(40), &head), &mut out)
             .expect("call");
         assert!(out.is_empty());
     }
 
-    /// `bind`'s registered version and `gix_anchor::DIFF_TRACE_ORACLE_VERSION`
+    /// `cand`'s registered version and `gix_anchor::DIFF_TRACE_ORACLE_VERSION`
     /// are two constants declaring a related fact: `gix-query-host` is one of
     /// the few crates that can see both `gix_query_ir`'s registry and
     /// `gix-anchor`'s own oracle versioning at once. A `diff_trace` behavior
     /// change that bumps its oracle version with no matching bump in the
-    /// registry would leave `bind`'s cache-key contribution unmoved, serving
+    /// registry would leave `cand`'s cache-key contribution unmoved, serving
     /// a cached answer computed under the old heuristic unchanged.
     #[test]
-    fn bind_version_tracks_the_diff_trace_oracle_it_wraps() {
+    fn cand_version_tracks_the_diff_trace_oracle_it_wraps() {
         let registry = gix_query_ir::Registry::host();
         let entry = registry
-            .builtin(&PredicateKey::new("bind", 5))
-            .expect("bind is registered");
+            .builtin(&PredicateKey::new("cand", 5))
+            .expect("cand is registered");
         assert_eq!(
             entry.props.version,
             gix_anchor::DIFF_TRACE_ORACLE_VERSION,
-            "bind's registered version has drifted from \
+            "cand's registered version has drifted from \
              gix_anchor::DIFF_TRACE_ORACLE_VERSION; bump the registry \
              constant in gix-query-ir to match"
         );

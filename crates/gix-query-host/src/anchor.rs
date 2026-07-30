@@ -5,12 +5,12 @@
 //!
 //! Binding-keyed storage used to live in `gix_anchor::Store`; that crate now
 //! owns identity and the oracle chain only (ARCHITECTURE.md, "git-anchor"),
-//! so this is `git-query`'s own minimal registry -- the one place a `bind`
+//! so this is `git-query`'s own minimal registry -- the one place a `cand`
 //! call resolves an anchor id to the [`gix_anchor::Anchor`] its oracles
 //! project onto a revision. The store holds every [`Binding`] variant `git
 //! anchor inject` writes; only [`Binding::Position`] is an anchor in this
 //! language's sense, so this predicate (and [`lookup`]) reports/answers only
-//! that subset, matching `bind`'s own refusal of anything else.
+//! that subset, matching `cand`'s own refusal of anything else.
 
 use gix::ObjectId;
 use gix_anchor::{Anchor, Binding, CaptureHandle};
@@ -27,7 +27,7 @@ fn anchor_ref(id: ObjectId) -> String {
 /// The [`Anchor`] `refs/anchors/<id>` names, or `None` when no such ref
 /// exists, its target does not decode as a [`Binding`] at all, or it decodes
 /// as a binding shape other than [`Binding::Position`] -- every case is
-/// simply "not an anchor `bind` can project", never a backend failure, since
+/// simply "not an anchor `cand` can project", never a backend failure, since
 /// a caller may name any oid.
 pub(crate) fn lookup(
     repo: &gix::Repository,

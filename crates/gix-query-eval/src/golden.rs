@@ -554,6 +554,129 @@ fn ordering_comparisons_hold_on_integers() {
     );
 }
 
+/// `bind/5`'s own aggregation stratum (ARCHITECTURE.md; see also
+/// `gix-query-rules::assemble`'s `CORE_MODULE_SOURCE`, the real
+/// `dominated`/`bind` pair over `cand/5`), reproduced here over a stub
+/// `stub_cand7` in place of the real `cand` builtin, so the max-selection
+/// idiom itself -- `>` plus stratified negation -- can be pinned against
+/// contrived confidences rather than whatever a real repository's oracles
+/// happen to produce.
+///
+/// The three confidences, `9500`, `10_000`, and `700`, are chosen
+/// specifically to catch a regression back to string-formatted confidence:
+/// as *unpadded* decimal strings ("9500", "10000", "700") lexicographic
+/// order gets `"10000"` wrong -- `'1' < '7'` and `'1' < '9'`, so `"10000"`
+/// sorts *below* both `"700"` and `"9500"` -- even though `10000` is the
+/// numeric maximum. `cand`'s confidence column is a plain `Int` precisely so
+/// `C2 > C` is a real integer comparison and this can never happen; this
+/// test is the concrete case that representation choice guards against, not
+/// just an assertion that `Value::Int` orders correctly (already covered by
+/// `ordering_comparisons_hold_on_integers`).
+#[test]
+fn bind_selects_the_maximum_confidence_not_the_lexicographically_greatest() {
+    let mut registry = Registry::host();
+    edb_enumerable(&mut registry, "stub_cand7", 5);
+    registry
+        .insert_predicate(PredicateEntry::idb(
+            gix_query_ir::PredicateKey::new("dominated7", 3),
+            Visibility::Private,
+        ))
+        .expect("insertable");
+    registry
+        .insert_predicate(PredicateEntry::idb(
+            gix_query_ir::PredicateKey::new("bind7", 5),
+            Visibility::Public,
+        ))
+        .expect("insertable");
+
+    let mut program = Program::new();
+    program.push_rule(
+        Rule::new(
+            Atom::new(
+                "dominated7",
+                vec![Term::var("A"), Term::var("R"), Term::var("C")],
+            ),
+            vec![
+                pos("stub_cand7", &["A", "R", "L1", "O1", "C"]),
+                pos("stub_cand7", &["A", "R", "L2", "O2", "C2"]),
+                Literal::Compare(Compare {
+                    op: CompareOp::Gt,
+                    left: SpannedTerm::synthetic(Term::var("C2")),
+                    right: SpannedTerm::synthetic(Term::var("C")),
+                    span: Span::synthetic(),
+                }),
+            ],
+        ),
+        "test",
+    );
+    program.push_rule(
+        Rule::new(
+            Atom::new(
+                "bind7",
+                vec![
+                    Term::var("A"),
+                    Term::var("R"),
+                    Term::var("L"),
+                    Term::var("O"),
+                    Term::var("C"),
+                ],
+            ),
+            vec![
+                pos("stub_cand7", &["A", "R", "L", "O", "C"]),
+                neg("dominated7", &["A", "R", "C"]),
+            ],
+        ),
+        "test",
+    );
+
+    let checked = CheckedProgram::assemble(
+        program,
+        registry,
+        Stratification::new(vec![
+            vec![gix_query_ir::PredicateKey::new("dominated7", 3)],
+            vec![gix_query_ir::PredicateKey::new("bind7", 5)],
+        ]),
+        Map::new(),
+        Map::new(),
+    );
+    let goal = Goal::new(
+        vec![pos("bind7", &["A", "R", "L", "O", "C"])],
+        vec![Var::new("L"), Var::new("O"), Var::new("C")],
+    );
+    let facts = StubTable::new().with(
+        gix_query_ir::PredicateKey::new("stub_cand7", 5),
+        vec![
+            vec![
+                sym("a1"),
+                sym("r1"),
+                sym("loc-fingerprint"),
+                sym("fingerprint"),
+                Value::Int(9_500),
+            ],
+            vec![
+                sym("a1"),
+                sym("r1"),
+                sym("loc-pin"),
+                sym("pin"),
+                Value::Int(10_000),
+            ],
+            vec![
+                sym("a1"),
+                sym("r1"),
+                sym("loc-weak"),
+                sym("weak"),
+                Value::Int(700),
+            ],
+        ],
+    );
+    assert_eq!(
+        relation(&checked, &goal, &facts),
+        vec![vec![sym("loc-pin"), sym("pin"), Value::Int(10_000)]],
+        "the pin candidate (confidence 10_000) must win, not \"700\" or \"9500\" \
+         read as the greatest string"
+    );
+}
+
 /// Build a trivial "unrewritten" program: the checked program's own rules,
 /// unmodified, plus a bare answer rule reading the goal straight off them.
 /// No guard, no magic relation, no demand -- exactly what running the goal

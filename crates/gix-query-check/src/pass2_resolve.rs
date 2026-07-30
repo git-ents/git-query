@@ -249,7 +249,7 @@ mod tests {
                 "x",
                 1,
                 vec![Literal::Negated(Atom::new(
-                    "bind",
+                    "cand",
                     vec![
                         Term::var("A"),
                         Term::var("R"),

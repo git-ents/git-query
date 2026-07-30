@@ -1,5 +1,5 @@
 //! `line(+Blob, N)`: 1-based line numbers, counting exactly as
-//! [`crate::util::count_lines`] does -- the same convention `bind`'s
+//! [`crate::util::count_lines`] does -- the same convention `cand`'s
 //! whole-file span uses, so a review anchored to a whole file and a query
 //! walking `line/2` over that same blob agree on how many lines it has.
 

@@ -470,7 +470,7 @@ mod tests {
             Rule::new(
                 Atom::new("wrap", vec![Term::var("L")]),
                 vec![Literal::Positive(Atom::new(
-                    "bind",
+                    "cand",
                     vec![
                         Term::var("A"),
                         Term::var("Rev"),

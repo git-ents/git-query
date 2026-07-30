@@ -2,7 +2,7 @@
 //! [`Builtin`].
 //!
 //! `gix_query_eval::run_to_fixpoint` takes exactly one `&dyn Builtin`, and the
-//! two builtin implementations that exist -- [`RepoBuiltins`] (`bind`) and
+//! two builtin implementations that exist -- [`RepoBuiltins`] (`cand`) and
 //! [`gix_query_ir::Comparisons`] (the six comparison operators, which need no
 //! repository) -- live in different crates for exactly the reason
 //! `gix-query-ir`'s module doc gives: comparing two ground values does not
@@ -12,11 +12,11 @@
 
 use gix_query_ir::{Bindings, Builtin, Comparisons, HostError, PredicateKey, Value};
 
-use crate::bind::RepoBuiltins;
+use crate::cand::RepoBuiltins;
 
 /// [`RepoBuiltins`] and [`Comparisons`], dispatched by predicate key.
 ///
-/// The two never provide the same key -- `bind` is arity 5, every comparison
+/// The two never provide the same key -- `cand` is arity 5, every comparison
 /// is arity 2 and named after a [`gix_query_ir::CompareOp`] -- so which one
 /// answers a call is unambiguous by construction, not by precedence.
 pub struct AllBuiltins<'r> {

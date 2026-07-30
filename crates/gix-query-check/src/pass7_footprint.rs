@@ -110,15 +110,15 @@ mod tests {
     use crate::error::Errors;
 
     /// A synthetic non-gate-safe builtin, registered only in this test's
-    /// own registry -- `bind` itself is gate-safe now that every candidate
+    /// own registry -- `cand` itself is gate-safe now that every candidate
     /// (pin, or one of the three named oracles) is a pure function of
     /// content and ref state, so nothing in the real registry is unsafe for
     /// gates any more.
     fn registry_with_unsafe_builtin() -> Registry {
         let mut r = Registry::host();
         let mut entry = r
-            .builtin(&PredicateKey::new("bind", 5))
-            .expect("bind")
+            .builtin(&PredicateKey::new("cand", 5))
+            .expect("cand")
             .clone();
         entry.key = PredicateKey::new("test_unsafe", 5);
         entry.gate_safe = false;

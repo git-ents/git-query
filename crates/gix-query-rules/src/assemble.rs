@@ -17,14 +17,56 @@ use gix_query_ir::{CheckedProgram, Module, PredicateKey, Program, Registry};
 use crate::error::{Error, join};
 use crate::store::RuleStore;
 
+/// The name every program is assembled under for [`CORE_MODULE_SOURCE`] --
+/// reserved, not a name any `RuleStore`-published module is expected to
+/// collide with.
+const CORE_MODULE_NAME: &str = "gix_query_core";
+
+/// `bind/5`'s own definition (ARCHITECTURE.md, "git-query"): the aggregation
+/// stratum over `cand/5`, expressed in the rule language rather than in
+/// `gix-query-host`'s Rust, exactly as the doc writes it --
+///
+/// ```text
+/// bind(A, Rev, Loc, O, C) :- cand(A, Rev, Loc, O, C),
+///                            C = max{ C' : cand(A, Rev, _, _, C') }.
+/// ```
+///
+/// `max{}` itself has no lowering path (`gix-query-eval`'s own module doc:
+/// "the IR has no term-level operations, so arithmetic and aggregates have
+/// no lowering path at all") -- this is the standard stratified-negation
+/// encoding of argmax instead, needing nothing beyond what the engine
+/// already runs: a `>` comparison (numeric, since `cand`'s confidence column
+/// is a plain `Int`) and stratified negation. `dominated` is `bind`'s own
+/// private helper, qualified to `gix_query_core.dominated` by [`qualify`]
+/// like any other module-local predicate; `bind` itself is pre-declared
+/// `pub` IDB in [`Registry::host`], so it resolves bare here instead of
+/// picking up the same qualification.
+const CORE_MODULE_SOURCE: &str = "
+pub bind(A, Rev, Loc, O, C).
+dominated(A, Rev, C) :- cand(A, Rev, _, _, C), cand(A, Rev, _, _, C2), C2 > C.
+bind(A, Rev, Loc, O, C) :- cand(A, Rev, Loc, O, C), !dominated(A, Rev, C).
+";
+
 /// Parse, qualify, resolve, and check every module `store` currently
-/// publishes, together, against `registry`.
+/// publishes, together with [`CORE_MODULE_SOURCE`], against `registry`.
+///
+/// `bind/5` is always present, in every assembled program, whether or not
+/// any rule module is ever published: it is core substrate
+/// (ARCHITECTURE.md's "only user-facing resolution predicate"), not
+/// something a repository opts into the way a review policy is.
 ///
 /// # Errors
 /// A module's source failing to parse, or the assembled program failing any
 /// of the nine validation passes.
 pub fn assemble(store: &RuleStore<'_>, registry: &Registry) -> Result<CheckedProgram, Error> {
     let mut program = Program::new();
+
+    let mut core = gix_query_parse::parse_module(CORE_MODULE_NAME, CORE_MODULE_SOURCE)
+        .expect("CORE_MODULE_SOURCE is fixed, valid source, pinned by this crate's own tests");
+    gix_query_parse::resolve_module(&mut core, registry);
+    qualify(&mut core, registry);
+    program.add_module(core);
+
     for name in store.list()? {
         let source = store
             .get(&name)?

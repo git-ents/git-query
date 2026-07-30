@@ -13,18 +13,21 @@
 //! reading it, so the two cannot drift the way a layout documented only in
 //! prose could.
 //!
-//! [`RepoBuiltins`] answers the two projection builtins, `bind` and
-//! `bind_fuzzy`. They are separate from [`RepoFacts`] because they are
-//! separate to the validator too: a builtin is called with bound arguments
-//! inside the fixpoint and may mint values, an EDB relation is read, and the
+//! [`RepoBuiltins`] answers the one projection builtin, `cand` -- every
+//! candidate location an anchor might sit at on a revision, unselected.
+//! `bind/5` itself, the selection over `cand`, is a rule
+//! (`gix-query-rules::assemble`'s always-present core module), not a
+//! builtin. `cand` is separate from [`RepoFacts`] because it is separate to
+//! the validator too: a builtin is called with bound arguments inside the
+//! fixpoint and may mint values, an EDB relation is read, and the
 //! minting-confinement pass exists to keep those two apart.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 mod anchor;
 mod author;
-mod bind;
 mod builtins;
+mod cand;
 mod claim;
 mod commit;
 mod facts;
@@ -33,6 +36,6 @@ mod member;
 mod tree;
 mod util;
 
-pub use bind::RepoBuiltins;
 pub use builtins::AllBuiltins;
+pub use cand::RepoBuiltins;
 pub use facts::RepoFacts;

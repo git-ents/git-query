@@ -1,4 +1,4 @@
-//! Small helpers shared by [`crate::facts`] and [`crate::bind`]: hex-oid
+//! Small helpers shared by [`crate::facts`] and [`crate::cand`]: hex-oid
 //! parsing, a uniform way to box a backend failure, blob line counting (the
 //! unit `line/2` counts in, and the unit a projection's span is expressed in
 //! too), fact construction, and member-identity hashing.
