@@ -20,7 +20,7 @@ use gix_query_parse::{parse_module, resolve_module};
 const CORRECTED_VOCABULARY: &str = r#"
 pub reviewed(B).
 pub unreviewed(Rev, B).
-pub unreviewed_line(Rev, Path, B, N).
+pub unreviewed_loc(Rev, Loc).
 pub mergeable(Rev).
 
 active_member(M) :- member(M), !revoked(M).
@@ -39,15 +39,11 @@ introduced(Rev, B, C) :- reach(Rev, C), tree_entry(C, P, B), !has_parent(C).
 authored(Rev, B, M) :- introduced(Rev, B, C), author(C, M).
 self_approved(Rev, B, M) :- authored(Rev, B, M), approved_by(B, M).
 
-carries(same, intact).
-carries(moved, intact).
+reviewed_loc(Rev, Loc) :- review(C), target(C, A), anchor(A), verdict(C, approve), signer(C, M), active_member(M), bind(A, Rev, Loc, O, Con).
 
-reviewed_span(Rev, B, S, E) :- review(C), target(C, A), anchor(A), verdict(C, approve), signer(C, M), active_member(M), bind(A, Rev, B, S, E, Pos, Con), carries(Pos, Con).
+ambiguous(A, Rev) :- bind(A, Rev, Loc1, _, _), bind(A, Rev, Loc2, _, _), Loc1 != Loc2.
 
-ambiguous(A, Rev) :- bind(A, Rev, B1, _, _, _, _), bind(A, Rev, B2, _, _, _, _), B1 != B2.
-
-reviewed_line(Rev, B, N) :- reviewed_span(Rev, B, S, E), line(B, N), N >= S, N <= E.
-unreviewed_line(Rev, P, B, N) :- tree_entry(Rev, P, B), line(B, N), !reviewed_line(Rev, B, N).
+unreviewed_loc(Rev, Loc) :- anchor(A), bind(A, Rev, Loc, _, _), !reviewed_loc(Rev, Loc).
 
 unreviewed(Rev, B) :- tree_entry(Rev, _, B), !reviewed(B).
 blocked(Rev) :- unreviewed(Rev, _).

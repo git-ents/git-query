@@ -26,6 +26,8 @@ const PROVIDED: &[(&str, usize)] = &[
     ("target", 2),
     ("signer", 2),
     ("verdict", 2),
+    ("rev", 2),
+    ("loc", 2),
     ("anchor", 1),
     ("line", 2),
 ];
@@ -65,9 +67,12 @@ impl FactSource for RepoFacts<'_> {
             ("member", 1) => member::member_facts(self.repo, key, bound, attribute),
             ("revoked", 1) => member::revoked_facts(self.repo, key, bound, attribute),
             ("claim", 1) => claim::claim_facts(self.repo, key, bound, attribute),
-            ("kind", 2) | ("target", 2) | ("signer", 2) | ("verdict", 2) => {
-                claim::trailer_facts(self.repo, key, bound, attribute)
-            }
+            ("kind", 2)
+            | ("target", 2)
+            | ("signer", 2)
+            | ("verdict", 2)
+            | ("rev", 2)
+            | ("loc", 2) => claim::trailer_facts(self.repo, key, bound, attribute),
             ("anchor", 1) => anchor::facts(self.repo, key, bound, attribute),
             ("line", 2) => line::facts(self.repo, key, bound, attribute),
             _ => Err(HostError::NoProvider(key.clone())),
@@ -78,7 +83,6 @@ impl FactSource for RepoFacts<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gix_anchor::{Binding, Store};
     use gix_query_ir::{Backing, PredicateClass, Value, host_predicates};
     use test_support::Fixture;
 
@@ -155,12 +159,7 @@ mod tests {
 
     /// Every declared `Backing::RefGlob`, resolved through git's own glob
     /// semantics, must actually match the refs the corresponding provider
-    /// reads. This is what would have caught the anchor glob bug:
-    /// `refs/anchors/*` parses, and `provides`/`facts` disagreeing about it
-    /// is invisible to every other test, but `git for-each-ref refs/anchors/*`
-    /// matches nothing at all, because a single `*` stops at a slash and
-    /// `gix_anchor::Store` writes `refs/anchors/<target>/<id>` -- one level
-    /// deeper. `Fixture::git`'s own `for-each-ref` is the oracle, not this
+    /// reads -- `Fixture::git`'s own `for-each-ref` is the oracle, not this
     /// crate's understanding of the pattern.
     #[test]
     fn declared_ref_globs_match_what_the_provider_actually_reads() {
@@ -186,9 +185,15 @@ mod tests {
 
         let repo = f.open();
         let anchor = gix_anchor::capture(&repo, "HEAD", "a.txt", None).expect("capture");
-        Store::open(&repo)
-            .attach(&Binding::Position(anchor), b"a claim body", None)
-            .expect("attach anchor");
+        let anchor_id = crate::anchor::attach(&repo, anchor).expect("attach anchor");
+
+        // A `rebind-pin` claim, so `rev/2` and `loc/2` both have at least
+        // one matching row too.
+        let pin_message = format!(
+            "rebind\n\nKind: rebind-pin\nTarget: {anchor_id}\nRev: {head}\nLoc: a.txt:0-1\n"
+        );
+        let pin_id = f.commit(&pin_message);
+        f.update_ref(&format!("refs/meta/claims/{pin_id}"), &pin_id);
 
         let repo = f.open();
         let facts = RepoFacts::new(&repo);

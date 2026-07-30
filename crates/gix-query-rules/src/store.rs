@@ -1,7 +1,7 @@
 //! Rule-module storage at `refs/meta/rules/<name>`, via `gix-store`.
 
 use facet::Facet;
-use gix_store::{GixRefStore, Kind, Layout, RefPrefix, RefSegment, RepoStore, Typed};
+use gix_store::{GixRefStore, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed};
 
 use crate::error::Error;
 
@@ -65,14 +65,14 @@ impl<'r> RuleStore<'r> {
         let record = RuleModuleRecord {
             source: source.to_owned(),
         };
-        let name = RefSegment::new(name)?;
+        let name = RefPath::from(RefSegment::new(name)?);
         Ok(self.kind().put(&name, &record)?)
     }
 
     /// The current source text for module `name`, or `None` if it has never
     /// been published.
     pub fn get(&self, name: &str) -> Result<Option<String>, Error> {
-        let name = RefSegment::new(name)?;
+        let name = RefPath::from(RefSegment::new(name)?);
         Ok(self.kind().get(&name)?.map(|record| record.source))
     }
 
@@ -88,7 +88,7 @@ impl<'r> RuleStore<'r> {
 
     /// Delete module `name`. Returns whether it existed.
     pub fn delete(&self, name: &str) -> Result<bool, Error> {
-        let name = RefSegment::new(name)?;
+        let name = RefPath::from(RefSegment::new(name)?);
         Ok(self.kind().remove(&name)?)
     }
 }

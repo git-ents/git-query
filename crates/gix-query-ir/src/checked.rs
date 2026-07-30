@@ -236,16 +236,37 @@ mod tests {
         assert!(s.negation_is_stratified(&key("blocked"), &key("member")));
     }
 
+    /// A non-gate-safe builtin registered only in this test's own registry --
+    /// `bind` itself is gate-safe now that every candidate (pin, or one of
+    /// the three named oracles) is a pure function of content and ref
+    /// state, so a synthetic stand-in is what exercises the gate-safety
+    /// check instead.
+    fn unsafe_builtin_key() -> PredicateKey {
+        PredicateKey::new("test_unsafe", 1)
+    }
+
+    fn registry_with_unsafe_builtin() -> Registry {
+        let mut r = Registry::host();
+        let mut entry = r
+            .builtin(&PredicateKey::new("bind", 5))
+            .expect("bind")
+            .clone();
+        entry.key = unsafe_builtin_key();
+        entry.gate_safe = false;
+        r.insert_builtin(entry);
+        r
+    }
+
     #[test]
     fn a_transitively_reachable_fuzzy_builtin_is_still_reachable() {
         // The wrapper-predicate defeat is the whole reason the footprint is
         // transitive over builtins, so it gets a test rather than a comment.
-        let registry = Registry::host();
+        let registry = registry_with_unsafe_builtin();
         let mut inner = Footprint::default();
-        inner.builtins.insert(PredicateKey::new("bind_fuzzy", 7));
+        inner.builtins.insert(unsafe_builtin_key());
         let mut outer = Footprint::default();
         outer.absorb(&inner);
-        assert!(outer.reaches_builtin(&PredicateKey::new("bind_fuzzy", 7)));
+        assert!(outer.reaches_builtin(&unsafe_builtin_key()));
         assert!(!outer.is_gate_safe(&registry));
         assert_eq!(outer.gate_unsafe_builtins(&registry).count(), 1);
     }
@@ -254,7 +275,7 @@ mod tests {
     fn a_gate_safe_footprint_passes() {
         let registry = Registry::host();
         let mut f = Footprint::default();
-        f.builtins.insert(PredicateKey::new("bind", 7));
+        f.builtins.insert(PredicateKey::new("bind", 5));
         f.builtins.insert(PredicateKey::new("!=", 2));
         assert!(f.is_gate_safe(&registry));
     }

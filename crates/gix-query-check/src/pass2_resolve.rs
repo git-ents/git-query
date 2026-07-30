@@ -253,10 +253,8 @@ mod tests {
                     vec![
                         Term::var("A"),
                         Term::var("R"),
-                        Term::var("B"),
-                        Term::var("S"),
-                        Term::var("E"),
-                        Term::var("P"),
+                        Term::var("L"),
+                        Term::var("O"),
                         Term::var("C"),
                     ],
                 ))],

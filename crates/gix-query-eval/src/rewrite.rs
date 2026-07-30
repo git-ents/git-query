@@ -787,23 +787,21 @@ mod tests {
         f.idb_free("out", 1);
         f.rule(
             Rule::new(
-                Atom::new("out", vec![Term::var("Blob")]),
+                Atom::new("out", vec![Term::var("Loc")]),
                 vec![Literal::Builtin(Atom::new(
                     "bind",
                     vec![
                         Term::var("Anchor"),
                         Term::var("Rev"),
-                        Term::var("Blob"),
-                        Term::var("S"),
-                        Term::var("E"),
-                        Term::var("Pos"),
+                        Term::var("Loc"),
+                        Term::var("O"),
                         Term::var("Con"),
                     ],
                 ))],
             ),
             &[],
         );
-        // Hand-fix the adornment: bind is (+,+,-,-,-,-,-).
+        // Hand-fix the adornment: bind is (+,+,-,-,-).
         let checked_program = {
             let id = RuleId(0);
             f.adorn(
@@ -811,7 +809,7 @@ mod tests {
                 gix_query_ir::RuleAdornments {
                     rule: id,
                     head: Adornment::new(ArgSet::empty(), 1),
-                    body: vec![Adornment::new(ArgSet::from_indices([0, 1]), 7)],
+                    body: vec![Adornment::new(ArgSet::from_indices([0, 1]), 5)],
                 },
             );
             f.checked()
@@ -821,7 +819,7 @@ mod tests {
             vec![Var::new("B")],
         );
         let rewritten = rewrite(&checked_program, &goal);
-        let bind = PredicateKey::new("bind", 7);
+        let bind = PredicateKey::new("bind", 5);
         assert!(
             rewritten
                 .demand

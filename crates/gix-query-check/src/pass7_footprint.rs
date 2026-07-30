@@ -3,7 +3,7 @@
 //! Transitive closure to base predicates *and to builtins*, over the same
 //! SCC decomposition pass 5 already computed. Builtin reachability has to be
 //! transitive for the same reason base-predicate reachability does: the
-//! `bind_fuzzy`-in-gates prohibition and the ambiguity lint (both downstream
+//! not-gate-safe-in-gates prohibition and the ambiguity lint (both downstream
 //! of this crate, in whatever assembles gate rules) are each a question of
 //! "does this predicate's footprint reach builtin X", and a footprint that
 //! stopped at direct references would be defeated by a one-line wrapper
@@ -17,7 +17,7 @@
 //! its own -- there is no [`crate::Pass::Footprint`] reject fixture, and
 //! that is by design rather than a gap. The spec's own wording is precise
 //! about this: the footprint is *consumed* by four checks (the cache key,
-//! the effect-graph acyclicity check, the `bind_fuzzy`-in-gates prohibition,
+//! the effect-graph acyclicity check, the not-gate-safe-in-gates prohibition,
 //! the ambiguity lint), and every one of those consumers needs a concept
 //! this crate does not have -- "which rules are gates", "what the effect
 //! graph is" -- so they belong to whatever assembles gate rules
@@ -109,19 +109,34 @@ mod tests {
     use super::*;
     use crate::error::Errors;
 
+    /// A synthetic non-gate-safe builtin, registered only in this test's
+    /// own registry -- `bind` itself is gate-safe now that every candidate
+    /// (pin, or one of the three named oracles) is a pure function of
+    /// content and ref state, so nothing in the real registry is unsafe for
+    /// gates any more.
+    fn registry_with_unsafe_builtin() -> Registry {
+        let mut r = Registry::host();
+        let mut entry = r
+            .builtin(&PredicateKey::new("bind", 5))
+            .expect("bind")
+            .clone();
+        entry.key = PredicateKey::new("test_unsafe", 5);
+        entry.gate_safe = false;
+        r.insert_builtin(entry);
+        r
+    }
+
     #[test]
-    fn a_footprint_reaches_a_wrapped_fuzzy_builtin() {
-        // wrap(A, Rev, B, S, E, P, C) :- bind_fuzzy(A, Rev, B, S, E, P, C).
-        // outer(A, Rev, B, S, E, P, C) :- wrap(A, Rev, B, S, E, P, C).
+    fn a_footprint_reaches_a_wrapped_unsafe_builtin() {
+        // wrap(A, Rev, L, O, Con) :- test_unsafe(A, Rev, L, O, Con).
+        // outer(A, Rev, L, O, Con) :- wrap(A, Rev, L, O, Con).
         let mut program = Program::new();
         let vars = || {
             vec![
                 Term::var("A"),
                 Term::var("R"),
-                Term::var("B"),
-                Term::var("S"),
-                Term::var("E"),
-                Term::var("P"),
+                Term::var("L"),
+                Term::var("O"),
                 Term::var("Con"),
             ]
         };
@@ -129,7 +144,7 @@ mod tests {
             &mut program,
             Rule::new(
                 Atom::new("wrap", vars()),
-                vec![Literal::Positive(Atom::new("bind_fuzzy", vars()))],
+                vec![Literal::Positive(Atom::new("test_unsafe", vars()))],
             ),
             "m",
         );
@@ -142,15 +157,16 @@ mod tests {
             "m",
         );
         let mut errors = Errors::new();
-        let registry = crate::registry_build::build(&program, &Registry::host(), &mut errors);
+        let registry =
+            crate::registry_build::build(&program, &registry_with_unsafe_builtin(), &mut errors);
         let mut stratify_errors = Errors::new();
         let stratify = crate::pass5_stratify::check(&program, &registry, &mut stratify_errors);
         assert!(stratify_errors.is_empty());
         let footprints = compute(&program, &registry, &stratify);
         let outer_fp = footprints
-            .get(&PredicateKey::new("outer", 7))
+            .get(&PredicateKey::new("outer", 5))
             .expect("outer has a footprint");
-        assert!(outer_fp.reaches_builtin(&PredicateKey::new("bind_fuzzy", 7)));
+        assert!(outer_fp.reaches_builtin(&PredicateKey::new("test_unsafe", 5)));
         assert!(!outer_fp.is_gate_safe(&registry));
     }
 

@@ -1,24 +1,54 @@
-//! `anchor(A)`, backed by `refs/anchors/*` -- `gix_anchor::Store`'s own note
-//! namespace.
+//! `anchor(A)`, backed by `refs/anchors/<id>` -- one ref per anchor,
+//! pointing directly at the serialized [`Binding`] tree
+//! [`Binding::serialize_into`] returns (its [`gix_anchor::CaptureHandle`]),
+//! never a commit: an anchor's own identity carries no history of its own.
 //!
-//! The store holds [`gix_anchor::Binding`], of which only
-//! [`gix_anchor::Binding::Position`] is an anchor in this language's sense: a
-//! durable, line-level identity `bind` can project. The store's other
-//! binding shapes (`Commit`, `Tree`, `Delta`, `Hybrid`) are a broader
-//! vocabulary `gix-anchor` supports for other consumers; this predicate
-//! reports only the position-bound subset, so a query never gets an `A` that
-//! `bind` cannot answer for.
+//! Binding-keyed storage used to live in `gix_anchor::Store`; that crate now
+//! owns identity and the oracle chain only (ARCHITECTURE.md, "git-anchor"),
+//! so this is `git-query`'s own minimal registry -- the one place a `bind`
+//! call resolves an anchor id to the [`gix_anchor::Anchor`] its oracles
+//! project onto a revision. The store holds every [`Binding`] variant `git
+//! anchor inject` writes; only [`Binding::Position`] is an anchor in this
+//! language's sense, so this predicate (and [`lookup`]) reports/answers only
+//! that subset, matching `bind`'s own refusal of anything else.
 
-use gix_anchor::{Binding, Store};
+use gix::ObjectId;
+use gix_anchor::{Anchor, Binding, CaptureHandle};
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey};
 
-use crate::util::{backend, fact, parse_oid, sym_oid};
+use crate::util::{backend, backend_boxed, fact, parse_oid, sym_oid};
 
-/// `refs/anchors/<target>/<id>`, reconstructed from a [`gix_anchor::StoredNote`]'s
-/// own fields -- the layout `gix_anchor::store`'s module doc commits to, not
-/// something this crate invents.
-fn refname(note: &gix_anchor::StoredNote) -> String {
-    format!("refs/anchors/{}/{}", note.target, note.id)
+const ANCHOR_PREFIX: &str = "refs/anchors/";
+
+fn anchor_ref(id: ObjectId) -> String {
+    format!("{ANCHOR_PREFIX}{id}")
+}
+
+/// The [`Anchor`] `refs/anchors/<id>` names, or `None` when no such ref
+/// exists, its target does not decode as a [`Binding`] at all, or it decodes
+/// as a binding shape other than [`Binding::Position`] -- every case is
+/// simply "not an anchor `bind` can project", never a backend failure, since
+/// a caller may name any oid.
+pub(crate) fn lookup(
+    repo: &gix::Repository,
+    key: &PredicateKey,
+    id: ObjectId,
+) -> Result<Option<Anchor>, HostError> {
+    let refname = anchor_ref(id);
+    let Some(mut reference) = repo
+        .try_find_reference(&refname)
+        .map_err(|error| backend(key, error))?
+    else {
+        return Ok(None);
+    };
+    let handle_oid = reference
+        .peel_to_id()
+        .map_err(|error| backend(key, error))?
+        .detach();
+    match Binding::deserialize(&CaptureHandle::from(handle_oid), repo) {
+        Ok(Binding::Position(anchor)) => Ok(Some(anchor)),
+        Ok(_) | Err(_) => Ok(None),
+    }
 }
 
 pub(crate) fn facts<'a>(
@@ -27,33 +57,69 @@ pub(crate) fn facts<'a>(
     bound: Bindings<'_>,
     attribute: bool,
 ) -> Result<Facts<'a>, HostError> {
-    let store = Store::open(repo);
     match bound.first() {
         Some(Some(v)) => {
             let id = parse_oid(key, v)?;
-            let note = store.get(id).map_err(|error| backend(key, error))?;
-            let out: Vec<Result<Fact, HostError>> = match note {
-                Some(note) if matches!(note.binding, Binding::Position(_)) => {
-                    let refname = refname(&note);
-                    vec![Ok(fact(vec![sym_oid(id)], Some(&refname), attribute))]
-                }
-                _ => vec![],
+            let out: Vec<Result<Fact, HostError>> = match lookup(repo, key, id)? {
+                Some(_) => vec![Ok(fact(
+                    vec![sym_oid(id)],
+                    Some(&anchor_ref(id)),
+                    attribute,
+                ))],
+                None => vec![],
             };
             Ok(Box::new(out.into_iter()))
         }
         _ => {
-            let notes = store.list(None).map_err(|error| backend(key, error))?;
-            let out: Vec<_> = notes
-                .into_iter()
-                .filter(|note| matches!(note.binding, Binding::Position(_)))
-                .map(|note| {
-                    let refname = refname(&note);
-                    Ok(fact(vec![sym_oid(note.id)], Some(&refname), attribute))
-                })
-                .collect();
+            let platform = repo.references().map_err(|error| backend(key, error))?;
+            let mut out = Vec::new();
+            for reference in platform
+                .prefixed(ANCHOR_PREFIX)
+                .map_err(|error| backend(key, error))?
+            {
+                let reference = reference.map_err(|error| backend_boxed(key, error))?;
+                let refname = reference.name().as_bstr().to_string();
+                let Some(id) = refname
+                    .strip_prefix(ANCHOR_PREFIX)
+                    .and_then(|hex| ObjectId::from_hex(hex.as_bytes()).ok())
+                else {
+                    continue;
+                };
+                if lookup(repo, key, id)?.is_some() {
+                    out.push(Ok(fact(vec![sym_oid(id)], Some(&refname), attribute)));
+                }
+            }
+            out.sort_by(|a, b| {
+                let (Ok(a), Ok(b)) = (a, b) else {
+                    return std::cmp::Ordering::Equal;
+                };
+                a.values[0].cmp(&b.values[0])
+            });
             Ok(Box::new(out.into_iter()))
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn attach(repo: &gix::Repository, anchor: Anchor) -> Result<ObjectId, HostError> {
+    use gix::refs::transaction::PreviousValue;
+
+    let binding = Binding::Position(anchor);
+    let id = binding
+        .anchor_id()
+        .map_err(|error| backend(&PredicateKey::new("anchor", 1), error))?;
+    let id = ObjectId::from(id);
+    let handle = binding
+        .serialize_into(repo)
+        .map_err(|error| backend(&PredicateKey::new("anchor", 1), error))?;
+    repo.reference(
+        anchor_ref(id),
+        ObjectId::from(handle),
+        PreviousValue::Any,
+        "attach anchor",
+    )
+    .map_err(|error| backend(&PredicateKey::new("anchor", 1), error))?;
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -76,17 +142,23 @@ mod tests {
             Some(gix_anchor::LineRange { start: 1, end: 2 }),
         )
         .expect("capture");
-        let store = Store::open(&repo);
-        let position_id = store
-            .attach(&Binding::Position(anchor), b"a claim body", None)
-            .expect("attach position");
+        let position_id = attach(&repo, anchor).expect("attach position");
 
         let commit_binding = Binding::Commit {
-            commit: repo.head_id().expect("head").detach(),
+            identity: gix_anchor::CommitIdentity {
+                commit: repo.head_id().expect("head").detach().into(),
+            },
+            hints: gix_anchor::NoHints {},
         };
-        let commit_id = store
-            .attach(&commit_binding, b"not an anchor", None)
-            .expect("attach commit binding");
+        let commit_handle = commit_binding.serialize_into(&repo).expect("serialize");
+        let commit_id = ObjectId::from(commit_binding.anchor_id().expect("anchor_id"));
+        repo.reference(
+            anchor_ref(commit_id),
+            ObjectId::from(commit_handle),
+            gix::refs::transaction::PreviousValue::Any,
+            "attach commit binding",
+        )
+        .expect("write ref");
 
         let key = PredicateKey::new("anchor", 1);
         let out: Vec<_> = facts(&repo, &key, &[None], false)
@@ -106,5 +178,11 @@ mod tests {
         .collect::<Result<Vec<_>, _>>()
         .expect("ok");
         assert!(out.is_empty(), "a commit binding is not an anchor");
+
+        let out = facts(&repo, &key, &[Some(Value::sym("0".repeat(40)))], false)
+            .expect("facts")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ok");
+        assert!(out.is_empty(), "an unregistered oid is not an anchor");
     }
 }

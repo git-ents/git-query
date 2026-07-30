@@ -42,6 +42,16 @@ enum TrailerRelation {
     Signer,
     /// `verdict/2`, `Symbol`-typed.
     Verdict,
+    /// `rev/2`, `Rev`-typed (the same hex wire shape as `Oid`) -- a
+    /// `rebind-pin` claim's own pinned revision (`gix_anchor::RebindPin::rev`,
+    /// ARCHITECTURE.md's `git-attest` payload; carried here on a trailer
+    /// until `git-attest`'s envelope exists, DELTA X1).
+    Rev,
+    /// `loc/2`, `Location`-typed -- a `rebind-pin` claim's pinned location,
+    /// formatted exactly as `bind/5`'s own `Loc` column
+    /// (`"<path>:<start>-<end>"`), so `bind`'s pin leg can read it back
+    /// verbatim rather than reassembling it from separate fields.
+    Loc,
 }
 
 impl TrailerRelation {
@@ -54,6 +64,8 @@ impl TrailerRelation {
             "target" => Some(Self::Target),
             "signer" => Some(Self::Signer),
             "verdict" => Some(Self::Verdict),
+            "rev" => Some(Self::Rev),
+            "loc" => Some(Self::Loc),
             _ => None,
         }
     }
@@ -65,14 +77,16 @@ impl TrailerRelation {
             Self::Target => "Target",
             Self::Signer => "Signer",
             Self::Verdict => "Verdict",
+            Self::Rev => "Rev",
+            Self::Loc => "Loc",
         }
     }
 
-    /// Whether this relation's value column is declared `Oid`- or
-    /// `Member`-typed, and should therefore be canonicalized through a hex
+    /// Whether this relation's value column is declared `Oid`-, `Member`-,
+    /// or `Rev`-shaped, and should therefore be canonicalized through a hex
     /// parse rather than passed through as a bare symbol.
     fn is_oid_shaped(self) -> bool {
-        matches!(self, Self::Target | Self::Signer)
+        matches!(self, Self::Target | Self::Signer | Self::Rev)
     }
 }
 
@@ -227,6 +241,49 @@ pub(crate) fn trailer_facts<'a>(
         }
     }
     Ok(Box::new(out.into_iter()))
+}
+
+/// Every `Loc:` trailer value on a `rebind-pin` claim naming `anchor` and
+/// pinned exactly at `rev` -- `bind`'s pin leg (ARCHITECTURE.md: "pin
+/// dominates the lattice"), at confidence 1.0 by construction wherever this
+/// returns a non-empty list.
+///
+/// No signature is checked here: `git-attest`'s envelope and crypto (DELTA
+/// X1) do not exist yet, so a `rebind-pin` claim on `refs/meta/claims/*` is
+/// trusted verbatim, exactly as `signer`/`verdict` already are. Once
+/// `git-attest` exists, this is the one place that needs to start asking it
+/// to verify the claim before trusting its trailers.
+pub(crate) fn rebind_pin_locs(
+    repo: &gix::Repository,
+    key: &PredicateKey,
+    anchor: ObjectId,
+    rev: ObjectId,
+) -> Result<Vec<String>, HostError> {
+    let anchor_hex = anchor.to_string();
+    let rev_hex = rev.to_string();
+    let mut out = Vec::new();
+    for (_, claim) in claim_refs(repo, key)? {
+        if !trailer_values(repo, key, claim, "Kind")?
+            .iter()
+            .any(|v| v == "rebind-pin")
+        {
+            continue;
+        }
+        if !trailer_values(repo, key, claim, "Target")?
+            .iter()
+            .any(|v| v == &anchor_hex)
+        {
+            continue;
+        }
+        if !trailer_values(repo, key, claim, "Rev")?
+            .iter()
+            .any(|v| v == &rev_hex)
+        {
+            continue;
+        }
+        out.extend(trailer_values(repo, key, claim, "Loc")?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

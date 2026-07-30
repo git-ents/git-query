@@ -62,10 +62,8 @@ mod tests {
             vec![
                 Term::var("A"),
                 Term::var("Rev"),
-                Term::var("B"),
-                Term::var("S"),
-                Term::var("E"),
-                Term::var("P"),
+                Term::var("L"),
+                Term::var("O"),
                 Term::var("C"),
             ],
         ))
@@ -82,10 +80,8 @@ mod tests {
                     vec![
                         Term::var("A"),
                         Term::var("Rev"),
-                        Term::var("B"),
-                        Term::var("S"),
-                        Term::var("E"),
-                        Term::var("P"),
+                        Term::var("L"),
+                        Term::var("O"),
                         Term::var("C"),
                     ],
                 ),
@@ -103,7 +99,7 @@ mod tests {
 
     #[test]
     fn bind_inside_a_recursive_predicate_is_pass_nine() {
-        // loopy(A, Rev, B, S, E, P, C) :- loopy(A, Rev, _, _, _, _, _), bind(...).
+        // loopy(A, Rev, L, O, C) :- loopy(A, Rev, _, _, _), bind(...).
         let mut program = Program::new();
         crate::testutil::add(
             &mut program,
@@ -113,10 +109,8 @@ mod tests {
                     vec![
                         Term::var("A"),
                         Term::var("Rev"),
-                        Term::var("B"),
-                        Term::var("S"),
-                        Term::var("E"),
-                        Term::var("P"),
+                        Term::var("L"),
+                        Term::var("O"),
                         Term::var("C"),
                     ],
                 ),
@@ -126,8 +120,6 @@ mod tests {
                         vec![
                             Term::var("A"),
                             Term::var("Rev"),
-                            Term::Anon,
-                            Term::Anon,
                             Term::Anon,
                             Term::Anon,
                             Term::Anon,

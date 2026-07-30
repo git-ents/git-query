@@ -222,8 +222,8 @@ pub enum Literal {
     Negated(Atom),
     /// `X != Y` -- a filter over two already-bound terms.
     Compare(Compare),
-    /// `bind(A, Rev, B, S, E, Pos, Con)` -- a moded, non-enumerable call whose
-    /// bound arguments must be bound at this point in the body.
+    /// `bind(A, Rev, Loc, O, C)` -- a moded, non-enumerable call whose bound
+    /// arguments must be bound at this point in the body.
     Builtin(Atom),
 }
 

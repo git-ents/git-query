@@ -29,6 +29,20 @@ pub enum ValueType {
     Int,
     /// A bare keyword: a claim kind, a verdict.
     Symbol,
+    /// `bind/5`'s third column: a path and byte span, encoded as
+    /// `"<path>:<start>-<end>"` -- one atomic term, since the value domain
+    /// has no tuple type to hold `(path, start, end)` as three fields.
+    Location,
+    /// `bind/5`'s fourth column: which oracle contributed a candidate --
+    /// `pin`, or one of `gix_anchor::Oracle`'s three named oracles.
+    Oracle,
+    /// `bind/5`'s fifth column: an oracle's own confidence in a candidate,
+    /// `0.0..=1.0`, formatted to four decimal places (`"0.9300"`) so two
+    /// equal confidences are the same term rather than differing in
+    /// float-formatting noise. Not ordered by the comparison builtins --
+    /// max-selection over it is `bind`'s own aggregation stratum, not a rule
+    /// author comparing it with `>`.
+    Confidence,
 }
 
 impl ValueType {
@@ -44,6 +58,9 @@ impl ValueType {
             Self::Content => "content",
             Self::Int => "int",
             Self::Symbol => "symbol",
+            Self::Location => "location",
+            Self::Oracle => "oracle",
+            Self::Confidence => "confidence",
         }
     }
 
@@ -62,6 +79,10 @@ impl ValueType {
             // `none` occurs only alongside `Position::lost`; that pairing is
             // a host invariant, not a type-system one.
             Self::Content => Some(&["intact", "edited", "none"]),
+            // Pin dominates the lattice at confidence 1.0 by construction
+            // (ARCHITECTURE.md), but is not itself a `gix_anchor::Oracle`
+            // variant -- it is query's own leg, added to anchor's three.
+            Self::Oracle => Some(&["pin", "op_log", "diff_trace", "fingerprint"]),
             _ => None,
         }
     }
@@ -319,11 +340,9 @@ pub struct BuiltinEntry {
     pub props: BuiltinProps,
     /// Whether this builtin may appear in a rule reachable from a gate.
     ///
-    /// `bind_fuzzy` is the case this exists for: its backing projection
-    /// depends on ambient garbage-collection state, which is neither
-    /// content-addressed nor a ref, so it cannot appear in a cache key -- and
-    /// an admission decision should not turn on a best-scoring-window
-    /// heuristic besides.
+    /// A builtin whose answer depends on ambient state that is neither
+    /// content-addressed nor a ref cannot appear in a cache key, and an
+    /// admission decision should not turn on such a builtin either.
     pub gate_safe: bool,
     /// One line, printed by `git query predicates`.
     pub doc: &'static str,
@@ -517,7 +536,7 @@ fn edb(
 pub fn host_predicates() -> Vec<PredicateEntry> {
     use Backing::{ContentAddressed, RefGlob};
     use Mode::{Bound, Free};
-    use ValueType::{Int, Member, Oid, Path, Rev, Symbol};
+    use ValueType::{Int, Location, Member, Oid, Path, Rev, Symbol};
 
     // Enumerate the namespace, or test one identity. Both affordable, so both
     // legal -- which is the whole reason an EDB predicate carries a mode set.
@@ -622,24 +641,32 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
         edb(
             "verdict",
             &[Oid, Symbol],
-            enumerable_or_test2,
+            enumerable_or_test2.clone(),
             claims(),
             "the claim's verdict",
         ),
         edb(
             "anchor",
             &[Oid],
-            enumerable_or_test1,
-            // Two components, not one: `gix_anchor::Store` writes
-            // `refs/anchors/<target>/<binding>`, and under git's glob
-            // semantics `*` stops at a slash, so a single-star pattern here
-            // matches nothing at all. That is not a cosmetic error -- the
-            // footprint digest is the glob patterns plus the `(refname, oid)`
-            // pairs they match, so an empty match set means capturing or
-            // removing an anchor leaves the digest unchanged and a cached
-            // answer outlives the namespace it depended on.
-            vec![RefGlob("refs/anchors/**".into())],
+            enumerable_or_test1.clone(),
+            // One ref per anchor, `refs/anchors/<id>` -- a single component,
+            // so a single-star pattern matches every anchor.
+            vec![RefGlob("refs/anchors/*".into())],
             "an immutable identity whose location is derived",
+        ),
+        edb(
+            "rev",
+            &[Oid, Rev],
+            enumerable_or_test2.clone(),
+            claims(),
+            "a rebind-pin claim's pinned revision",
+        ),
+        edb(
+            "loc",
+            &[Oid, Location],
+            enumerable_or_test2,
+            claims(),
+            "a rebind-pin claim's pinned location, \"<path>:<start>-<end>\"",
         ),
         edb(
             "line",
@@ -664,19 +691,17 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
 pub fn builtins() -> Vec<BuiltinEntry> {
     use ArgType::{AnyScalar, Exact, SameAsArg};
     use Mode::{Bound, Free};
-    use ValueType::{Content, Int, Oid, Position, Rev};
+    use ValueType::{Confidence, Int, Location, Oid, Oracle, Rev};
 
-    let projection_types = vec![
+    let bind_types = vec![
         Exact(Oid),
         Exact(Rev),
-        Exact(Oid),
-        Exact(Int),
-        Exact(Int),
-        Exact(Position),
-        Exact(Content),
+        Exact(Location),
+        Exact(Oracle),
+        Exact(Confidence),
     ];
-    let projection_modes = ModeVector::new(vec![Bound, Bound, Free, Free, Free, Free, Free]);
-    let projection_props = BuiltinProps {
+    let bind_modes = ModeVector::new(vec![Bound, Bound, Free, Free, Free]);
+    let bind_props = BuiltinProps {
         total: true,
         deterministic: true,
         pure: true,
@@ -685,28 +710,19 @@ pub fn builtins() -> Vec<BuiltinEntry> {
         version: 1,
     };
 
-    let mut out = vec![
-        BuiltinEntry {
-            key: PredicateKey::new("bind", 7),
-            types: projection_types.clone(),
-            modes: projection_modes.clone(),
-            props: projection_props,
-            gate_safe: true,
-            doc: "project an anchor onto a revision by exact projection",
-        },
-        BuiltinEntry {
-            key: PredicateKey::new("bind_fuzzy", 7),
-            types: projection_types,
-            modes: projection_modes,
-            props: projection_props,
-            // Its backing projection falls back to a context search whose
-            // answer depends on whether garbage collection has run -- state
-            // that is neither content-addressed nor a ref, and therefore
-            // cannot enter a cache key.
-            gate_safe: false,
-            doc: "project an anchor onto a revision by context search; not gate-safe",
-        },
-    ];
+    let mut out = vec![BuiltinEntry {
+        key: PredicateKey::new("bind", 5),
+        types: bind_types,
+        modes: bind_modes,
+        props: bind_props,
+        // Every candidate (pin, or one of the three named oracles) is a
+        // pure function of the anchor's own content and the ref state
+        // `Rev` resolves to -- unlike the old `bind_fuzzy`, nothing here
+        // silently degrades based on ambient state such as whether
+        // garbage collection has run.
+        gate_safe: true,
+        doc: "resolve an anchor onto a revision: pin and the oracle chain, one confidence lattice",
+    }];
 
     for op in CompareOp::all() {
         let types = if op.is_ordering() {
@@ -833,6 +849,9 @@ mod tests {
         assert!(ValueType::Position.admits("moved"));
         assert!(!ValueType::Position.admits("intact"));
         assert!(ValueType::Content.admits("intact"));
+        assert!(ValueType::Oracle.admits("pin"));
+        assert!(ValueType::Oracle.admits("fingerprint"));
+        assert!(!ValueType::Oracle.admits("nonsense"));
         // An open type admits anything, which is what lets `approve` be a
         // plain symbol.
         assert!(ValueType::Symbol.admits("approve"));
@@ -851,16 +870,11 @@ mod tests {
     }
 
     #[test]
-    fn bind_fuzzy_is_not_gate_safe_and_bind_is() {
+    fn bind_is_gate_safe() {
         let r = Registry::host();
         assert!(
-            r.builtin(&PredicateKey::new("bind", 7))
+            r.builtin(&PredicateKey::new("bind", 5))
                 .expect("bind")
-                .gate_safe
-        );
-        assert!(
-            !r.builtin(&PredicateKey::new("bind_fuzzy", 7))
-                .expect("bind_fuzzy")
                 .gate_safe
         );
     }
@@ -888,7 +902,7 @@ mod tests {
         let mut a = Registry::host();
         let before = a.builtin_digest_input();
         let mut entry = a
-            .builtin(&PredicateKey::new("bind", 7))
+            .builtin(&PredicateKey::new("bind", 5))
             .expect("bind")
             .clone();
         entry.props.version += 1;

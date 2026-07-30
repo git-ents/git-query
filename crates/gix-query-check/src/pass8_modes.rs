@@ -468,17 +468,15 @@ mod tests {
         crate::testutil::add(
             &mut program,
             Rule::new(
-                Atom::new("wrap", vec![Term::var("B"), Term::var("S"), Term::var("E")]),
+                Atom::new("wrap", vec![Term::var("L")]),
                 vec![Literal::Positive(Atom::new(
                     "bind",
                     vec![
                         Term::var("A"),
                         Term::var("Rev"),
-                        Term::var("B"),
-                        Term::var("S"),
-                        Term::var("E"),
-                        Term::var("Po"),
-                        Term::var("Co"),
+                        Term::var("L"),
+                        Term::var("O"),
+                        Term::var("C"),
                     ],
                 ))],
             ),

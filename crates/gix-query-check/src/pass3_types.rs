@@ -328,44 +328,36 @@ mod tests {
 
     #[test]
     fn a_symbol_outside_a_closed_domain_is_pass_three() {
-        // carries(Pos, intact) is fine, but carries(nonsense, intact) is not
-        // once `carries`'s first argument is inferred as Position.
+        // labels(pin) is fine, but labels(nonsense) is not once `labels`'s
+        // argument is inferred as Oracle through `bind`'s fourth column.
         let mut program = Program::new();
-        // Both the seeding call and the use of `carries` must share one
+        // Both the seeding call and the use of `labels` must share one
         // clause: types are unified per rule body, so splitting `bind`'s
-        // output columns into a separate rule from the `carries(Pos, Con)`
-        // call would leave `Pos`/`Con` unconstrained where it matters.
+        // oracle column into a separate rule from the `labels(O)` call
+        // would leave `O` unconstrained where it matters.
         crate::testutil::add(
             &mut program,
             Rule::new(
-                Atom::new("uses", vec![Term::var("Pos"), Term::var("Con")]),
+                Atom::new("uses", vec![Term::var("O")]),
                 vec![
                     Literal::Builtin(Atom::new(
                         "bind",
                         vec![
                             Term::var("A"),
                             Term::var("Rev"),
-                            Term::var("B"),
-                            Term::var("S"),
-                            Term::var("E"),
-                            Term::var("Pos"),
-                            Term::var("Con"),
+                            Term::var("L"),
+                            Term::var("O"),
+                            Term::var("C"),
                         ],
                     )),
-                    Literal::Positive(Atom::new(
-                        "carries",
-                        vec![Term::var("Pos"), Term::var("Con")],
-                    )),
+                    Literal::Positive(Atom::new("labels", vec![Term::var("O")])),
                 ],
             ),
             "m",
         );
         crate::testutil::add(
             &mut program,
-            Rule::fact(Atom::new(
-                "carries",
-                vec![Term::sym("same"), Term::sym("intact")],
-            )),
+            Rule::fact(Atom::new("labels", vec![Term::sym("pin")])),
             "m",
         );
         crate::testutil::add(
@@ -373,8 +365,8 @@ mod tests {
             Rule::new(
                 Atom::new("bad", vec![]),
                 vec![Literal::Positive(Atom::new(
-                    "carries",
-                    vec![Term::sym("nonsense"), Term::sym("intact")],
+                    "labels",
+                    vec![Term::sym("nonsense")],
                 ))],
             ),
             "m",
