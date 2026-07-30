@@ -1,4 +1,4 @@
-//! The nine validation passes, and the sole producer of
+//! The eight validation passes, and the sole producer of
 //! [`gix_query_ir::CheckedProgram`].
 //!
 //! # Passes, in the order [`check`] runs them
@@ -19,8 +19,6 @@
 //! 5. Stratification -- an SCC decomposition of the predicate dependency
 //!    graph, rejecting a negative edge that closes a cycle and producing the
 //!    evaluation order.
-//! 6. Shape caps -- literal, variable, and rule counts, plus a literal that
-//!    joins nothing.
 //! 7. Footprint -- the transitive base predicates and builtins each
 //!    predicate reaches, over pass 5's decomposition.
 //! 8. Mode inference -- left to right, author order, no search: a least
@@ -29,16 +27,23 @@
 //! 9. Minting confinement -- no builtin declared `mints` inside a recursive
 //!    stratum, over the same decomposition pass 5 and pass 7 already used.
 //!
-//! Plus, after the nine: effect stratification -- no cycle in the graph an
-//! effect's declared write set induces over another effect's *computed* read
-//! set, the latter being pass 7's footprint mapped to ref namespaces
-//! (`ARCHITECTURE.md`'s git-effect section calls this fork-bomb freedom, and
-//! `docs/query-and-rules.adoc`'s "Triggers" section specifies the footprint
-//! as the graph's input). Not numbered among the nine because it validates
-//! [`gix_query_ir::EffectDecl`]s, a declaration form the rule body language
-//! does not produce. Its pieces -- [`check_acyclicity`], [`read_namespaces`],
-//! [`footprint_of_body`] -- are public so that `gix-query`'s facade can offer
-//! the same check over effect docs at define time without a second graph.
+//! Pass 6 (shape caps) is retired (`DEVPLAN.md` §0): by its own module doc it
+//! was a lint bounding validation cost, never a soundness pass, so the
+//! numbering above has a gap rather than a renumbering -- pass 7's own doc
+//! comment still calls itself pass 7, and this list matches it rather than
+//! closing the gap for its own sake.
+//!
+//! Plus, after the nine `docs/query-and-rules.adoc` numbers: effect
+//! stratification -- no cycle in the graph an effect's declared write set
+//! induces over another effect's *computed* read set, the latter being pass
+//! 7's footprint mapped to ref namespaces (`ARCHITECTURE.md`'s git-effect
+//! section calls this fork-bomb freedom, and `docs/query-and-rules.adoc`'s
+//! "Triggers" section specifies the footprint as the graph's input). Not
+//! numbered among the nine because it validates [`gix_query_ir::EffectDecl`]s,
+//! a declaration form the rule body language does not produce. Its pieces --
+//! [`check_acyclicity`], [`read_namespaces`], [`footprint_of_body`] -- are
+//! public so that `gix-query`'s facade can offer the same check over effect
+//! docs at define time without a second graph.
 //!
 //! # What this crate does not do
 //!
@@ -63,7 +68,6 @@ mod pass2_resolve;
 mod pass3_types;
 mod pass4_range;
 mod pass5_stratify;
-mod pass6_caps;
 mod pass7_footprint;
 mod pass8_modes;
 mod pass9_mint;
@@ -76,9 +80,11 @@ pub use pass10_effect_stratify::{EffectReads, ReadNamespaces, check_acyclicity, 
 
 use gix_query_ir::{CheckedProgram, Footprint, Goal, GoalAdornments, Literal, Program, Registry};
 
-/// Run all nine validation passes, plus effect stratification, over
-/// `program`, extending `registry` with one IDB entry per predicate the
-/// program defines.
+/// Run all eight surviving validation passes, plus effect stratification,
+/// over `program`, extending `registry` with one IDB entry per predicate
+/// the program defines.
+///
+/// Pass 6 (shape caps) is retired (`DEVPLAN.md` §0) and does not run here.
 ///
 /// This is the only way to construct a [`CheckedProgram`]: every downstream
 /// crate that needs a validated program takes one, never a `Program` plus a
@@ -89,7 +95,7 @@ use gix_query_ir::{CheckedProgram, Footprint, Goal, GoalAdornments, Literal, Pro
 /// harmless; predicates it already carries are treated as pre-declared host
 /// data, exactly like `commit/1`.
 ///
-/// On success every problem the nine passes found is empty by definition;
+/// On success every problem the eight passes found is empty by definition;
 /// on failure, every problem any pass found is returned together, so one run
 /// reports everything rather than the first thing.
 pub fn check(program: &Program, registry: &Registry) -> Result<CheckedProgram, Errors> {
@@ -103,7 +109,6 @@ pub fn check(program: &Program, registry: &Registry) -> Result<CheckedProgram, E
     pass3_types::check(program, &mut working, &mut errors);
     pass4_range::check(program, &mut errors);
     let stratify = pass5_stratify::check(program, &working, &mut errors);
-    pass6_caps::check(program, &mut errors);
     let footprints = pass7_footprint::compute(program, &working, &stratify);
     let adornments = pass8_modes::check(program, &mut working, &mut errors);
     pass9_mint::check(program, &working, &stratify, &mut errors);
@@ -149,9 +154,9 @@ pub fn footprint_of_body(body: &[Literal], checked: &CheckedProgram) -> Footprin
 /// it defines no predicate). What a goal needs before it is safe to hand to
 /// the evaluator is exactly passes 1, 2, 4, and 8 (mode checking still runs
 /// left to right, still starting from nothing bound, since a goal has no
-/// caller either) plus the type checking half of pass 3. Shape caps (pass 6)
-/// and stratification/footprint/minting (passes 5, 7, 9) are properties of
-/// the *stored* program a goal merely queries, not of the goal itself.
+/// caller either) plus the type checking half of pass 3.
+/// Stratification/footprint/minting (passes 5, 7, 9) are properties of the
+/// *stored* program a goal merely queries, not of the goal itself.
 ///
 /// Takes a [`CheckedProgram`] rather than a bare [`Registry`], so a goal can
 /// only ever be checked against a program whose own modes and types have

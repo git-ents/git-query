@@ -1,10 +1,13 @@
-//! Diagnostics for the nine validation passes.
+//! Diagnostics for the eight validation passes that survive `DEVPLAN.md` §0
+//! (pass 6, shape caps, was a lint rather than a soundness pass and is
+//! retired).
 //!
-//! One [`CheckError`] enum rather than nine, because a caller collecting
-//! `Errors` from one run should not have to match on nine different types to
-//! print them. [`CheckError::pass`] is what keeps that convenient without
-//! losing precision: every variant answers "which pass fired" exhaustively,
-//! so adding a tenth pass without adding an arm here is a compile error.
+//! One [`CheckError`] enum rather than one per pass, because a caller
+//! collecting `Errors` from one run should not have to match on several
+//! different types to print them. [`CheckError::pass`] is what keeps that
+//! convenient without losing precision: every variant answers "which pass
+//! fired" exhaustively, so adding a pass without adding an arm here is a
+//! compile error.
 
 use std::fmt;
 
@@ -12,7 +15,7 @@ use std::sync::Arc;
 
 use gix_query_ir::{Namespace, PredicateKey, RuleId, Span, Var};
 
-/// Which of the nine validation passes produced a diagnostic.
+/// Which of the eight surviving validation passes produced a diagnostic.
 ///
 /// Spelled out rather than left implicit in prose, because the test
 /// obligation is that every reject fixture names the pass that fired --
@@ -29,28 +32,30 @@ pub enum Pass {
     RangeRestriction,
     /// 5. Stratification.
     Stratification,
-    /// 6. Shape caps.
-    ShapeCaps,
     /// 7. Footprint.
+    ///
+    /// Pass 6 (shape caps) is retired (`DEVPLAN.md` §0), so the numbering
+    /// here has a gap rather than a renumbering.
     Footprint,
     /// 8. Mode inference.
     Modes,
     /// 9. Minting confinement.
     MintingConfinement,
-    /// Effect stratification (numbered 10, after the nine) -- the
+    /// Effect stratification (numbered 10, after the original nine) -- the
     /// fork-bomb-freedom check `ARCHITECTURE.md`'s git-effect section
     /// describes: no cycle in the graph an effect's declared write set
     /// induces over another effect's *computed* read set -- pass 7's footprint
     /// mapped to ref namespaces, as `docs/query-and-rules.adoc`'s "Triggers"
-    /// section specifies, because a declared read set can lie. Not one of the nine
-    /// `docs/query-and-rules.adoc` numbers; it runs after them, over effect
-    /// declarations rather than rules.
+    /// section specifies, because a declared read set can lie. Not one of the
+    /// original nine `docs/query-and-rules.adoc` numbers; it runs after them,
+    /// over effect declarations rather than rules.
     EffectStratification,
 }
 
 impl Pass {
     /// The pass number as the spec numbers it, for messages that cite "pass
-    /// N" the way `docs/query-and-rules.adoc` does.
+    /// N" the way `docs/query-and-rules.adoc` does. Skips 6 -- shape caps is
+    /// retired, not renumbered.
     #[must_use]
     pub const fn number(self) -> u8 {
         match self {
@@ -59,7 +64,6 @@ impl Pass {
             Self::Types => 3,
             Self::RangeRestriction => 4,
             Self::Stratification => 5,
-            Self::ShapeCaps => 6,
             Self::Footprint => 7,
             Self::Modes => 8,
             Self::MintingConfinement => 9,
@@ -76,7 +80,6 @@ impl fmt::Display for Pass {
             Self::Types => "arity and types",
             Self::RangeRestriction => "range restriction",
             Self::Stratification => "stratification",
-            Self::ShapeCaps => "shape caps",
             Self::Footprint => "footprint",
             Self::Modes => "mode inference",
             Self::MintingConfinement => "minting confinement",
@@ -338,47 +341,6 @@ pub enum CheckError {
         /// Where.
         span: Span,
     },
-    /// A rule body has more literals than the shape cap allows.
-    #[error("{rule} has {found} body literals, over the cap of {max}")]
-    TooManyLiterals {
-        /// The rule.
-        rule: RuleId,
-        /// How many it has.
-        found: usize,
-        /// The cap.
-        max: usize,
-    },
-    /// A rule mentions more distinct variables than the shape cap allows.
-    #[error("{rule} has {found} distinct variables, over the cap of {max}")]
-    TooManyVariables {
-        /// The rule.
-        rule: RuleId,
-        /// How many it has.
-        found: usize,
-        /// The cap.
-        max: usize,
-    },
-    /// The program has more rules than the shape cap allows.
-    #[error("the program has {found} rules, over the cap of {max}")]
-    TooManyRules {
-        /// How many it has.
-        found: usize,
-        /// The cap.
-        max: usize,
-    },
-    /// A body literal shares no variable with the rest of the body, which
-    /// makes it either dead weight or an unintended cross product.
-    #[error("literal {index} of {rule} ({predicate}) shares no variable with the rest of the body")]
-    UnjoinedLiteral {
-        /// The rule.
-        rule: RuleId,
-        /// The literal's position in the body.
-        index: usize,
-        /// The predicate it calls.
-        predicate: PredicateKey,
-        /// Where.
-        span: Span,
-    },
     /// A required-bound argument is not bound at the point in the body
     /// where the literal calling for it appears.
     ///
@@ -478,10 +440,6 @@ impl CheckError {
             | Self::UnrestrictedNegation { .. }
             | Self::UnrestrictedCompare { .. } => Pass::RangeRestriction,
             Self::UnstratifiableNegation { .. } => Pass::Stratification,
-            Self::TooManyLiterals { .. }
-            | Self::TooManyVariables { .. }
-            | Self::TooManyRules { .. }
-            | Self::UnjoinedLiteral { .. } => Pass::ShapeCaps,
             Self::ModeViolation { .. } | Self::UnsupportedEdbMode { .. } => Pass::Modes,
             Self::MintingInRecursion { .. } => Pass::MintingConfinement,
             Self::EffectCycle { .. } => Pass::EffectStratification,
@@ -506,15 +464,11 @@ impl CheckError {
             | Self::UnrestrictedNegation { span, .. }
             | Self::UnrestrictedCompare { span, .. }
             | Self::UnstratifiableNegation { span, .. }
-            | Self::UnjoinedLiteral { span, .. }
             | Self::ModeViolation { span, .. }
             | Self::UnsupportedEdbMode { span, .. }
             | Self::MintingInRecursion { span, .. }
             | Self::EffectCycle { span, .. } => *span,
             Self::NotRedefinable { .. } | Self::PredicateArityLimit { .. } => Span::synthetic(),
-            Self::TooManyLiterals { .. }
-            | Self::TooManyVariables { .. }
-            | Self::TooManyRules { .. } => Span::synthetic(),
         }
     }
 }

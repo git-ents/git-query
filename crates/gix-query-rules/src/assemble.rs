@@ -57,7 +57,7 @@ bind(A, Rev, Loc, O, C) :- cand(A, Rev, Loc, O, C), !dominated(A, Rev, C).
 ///
 /// # Errors
 /// A module's source failing to parse, or the assembled program failing any
-/// of the nine validation passes.
+/// of the eight validation passes.
 pub fn assemble(store: &RuleStore<'_>, registry: &Registry) -> Result<CheckedProgram, Error> {
     let mut program = Program::new();
 

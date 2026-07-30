@@ -48,7 +48,7 @@ Body literals are evaluated in author order, which fixes the sideways-informatio
 | --- | --- |
 | [`gix-query-ir`](crates/gix-query-ir) | terms, rules, the signature registry, canonicalization, and the traits the engine reaches the world through — the frozen seam |
 | [`gix-query-parse`](crates/gix-query-parse) | text to IR, and the pretty-printer |
-| [`gix-query-check`](crates/gix-query-check) | the nine validation passes |
+| [`gix-query-check`](crates/gix-query-check) | the eight validation passes |
 | [`gix-query-eval`](crates/gix-query-eval) | the magic-set rewrite, the Nemo lowering, the demand loop, and derivation trees |
 | [`gix-query-host`](crates/gix-query-host) | repo-backed fact sources and the projection builtins |
 | [`gix-query-rules`](crates/gix-query-rules) | rule-module storage, whole-program assembly, the cache key |

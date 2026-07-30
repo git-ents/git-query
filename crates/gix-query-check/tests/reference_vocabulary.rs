@@ -7,7 +7,7 @@
 //!
 //! - The corrected review vocabulary from §1.7 -- the doc's own flagship
 //!   program, with the `Rev`-threading fix applied -- must parse, resolve,
-//!   and validate clean, through all nine passes.
+//!   and validate clean, through all eight surviving passes.
 //! - The doc's *original*, un-threaded `introduced/2` must be rejected by
 //!   pass 8, naming `C` -- that is the exact bug the mode system exists to
 //!   catch, on the first program anyone reads.

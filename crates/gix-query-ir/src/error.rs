@@ -2,7 +2,7 @@ use crate::{PredicateKey, Span};
 
 /// A malformed-IR or malformed-registry failure.
 ///
-/// These are construction errors, not validation errors: the nine validation
+/// These are construction errors, not validation errors: the eight validation
 /// passes live in the checking crate and report against source spans. Anything
 /// here means a producer built IR the rest of the system cannot interpret.
 #[derive(Debug, thiserror::Error)]
