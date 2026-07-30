@@ -227,6 +227,32 @@ pub fn check_effect_acyclicity(
     }
 }
 
+/// Ref namespaces one rule-language body reads through, via its computed
+/// footprint.
+///
+/// This is the same footprint-to-namespace projection
+/// [`check_effect_acyclicity`] uses internally over an effect's `when`+`gate`
+/// bodies together, exposed here for a single body in isolation. `gix-effect`
+/// needs exactly this for two things `check_effect_acyclicity` does not
+/// answer on its own: D3's trigger selection ("effects whose `when` footprint
+/// overlaps the advanced ref") and D3's authoritative-refs-only validation --
+/// both ask what one body (`when` alone) reads, not what an effect's `when`
+/// and `gate` read combined. Exporting this rather than letting `gix-effect`
+/// reimplement it is D9's boundary: "stratification / acyclicity check ->
+/// gix-query -> calls at define time" -- the footprint projection is part of
+/// that machinery, not effect's to own.
+///
+/// # Errors
+/// [`EffectCheckError::Parse`] if `source` does not parse;
+/// [`EffectCheckError::Body`] if it fails validation against `checked`.
+pub fn body_read_namespaces(
+    checked: &CheckedProgram,
+    source: &str,
+) -> Result<Vec<Namespace>, EffectCheckError> {
+    let footprint = body_footprint(checked, "", source)?;
+    Ok(gix_query_check::read_namespaces(&footprint, checked.registry()).namespaces)
+}
+
 /// Parse, resolve, validate and take the footprint of one effect body.
 fn body_footprint(
     checked: &CheckedProgram,
@@ -282,6 +308,30 @@ pub fn run_goal(
 
     let mut goal = gix_query_parse::parse_goal_with_select(goal_text, select)
         .map_err(|e| QueryError::Parse(join(&e)))?;
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    run_checked_goal(repo, &checked, &goal)
+}
+
+/// Run a rule-language body to a demand fixpoint against `repo`, selecting
+/// every variable that occurs in it, in first-occurrence order -- the same
+/// default [`gix_query_parse::parse_goal`] gives tier 1's desugaring.
+///
+/// This is [`run_goal`] without an explicit `--select`, which is what a
+/// caller re-evaluating an effect's `when`/`gate` body wants (`gix-effect`'s
+/// trigger detection, `DEVPLAN-effect.md` D3): the whole point is comparing
+/// *which tuples* the body derives before and after a ref transition, so
+/// collapsing every row to an empty tuple -- what `run_goal(repo, body, &[])`
+/// would do -- would erase exactly the distinction a trigger needs to fire on
+/// the right entity rather than any entity.
+///
+/// # Errors
+/// See [`QueryError`].
+pub fn run_body(repo: &gix::Repository, body_source: &str) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program(repo)?;
+
+    let mut goal =
+        gix_query_parse::parse_goal(body_source).map_err(|e| QueryError::Parse(join(&e)))?;
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
     run_checked_goal(repo, &checked, &goal)

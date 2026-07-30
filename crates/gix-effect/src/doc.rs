@@ -8,7 +8,10 @@
 //! `git effect define`; those are B2/B3, per `DEVPLAN-effect.md`'s "Phases").
 
 use facet::Facet;
-use gix_query::{EffectCheckError, EffectDecl, EffectUnderCheck, Namespace, checked_program};
+use gix_query::{
+    EffectCheckError, EffectDecl, EffectUnderCheck, Namespace, body_read_namespaces,
+    checked_program,
+};
 use gix_store::{
     GixRefStore, InvalidRefName, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed,
 };
@@ -125,6 +128,22 @@ pub enum Error {
         name: String,
         /// Every problem [`gix_query::check_effect_acyclicity`] found.
         errors: Vec<EffectCheckError>,
+    },
+    /// `when`'s computed footprint reaches a ref namespace that is not
+    /// authoritative -- `DEVPLAN-effect.md` D3's last line: "Triggers read
+    /// authoritative refs only," enforced here rather than by filtering at
+    /// fire time, so a bad trigger is refused before it is ever stored.
+    #[error(
+        "effect `{name}`'s `when` reads `{namespace}`, which is not an authoritative ref \
+         namespace -- `{}/ARCHITECTURE.md`'s rederive test: state that can be reconstructed \
+         with zero information loss is derived, and derived state is never an effect trigger",
+        "../git-anchor"
+    )]
+    NonAuthoritativeTrigger {
+        /// The effect whose `when` reads a derived namespace.
+        name: String,
+        /// The derived namespace it reads.
+        namespace: Namespace,
     },
 }
 
@@ -243,9 +262,63 @@ impl<'r> EffectStore<'r> {
             });
         }
 
+        let when_namespaces =
+            body_read_namespaces(&checked, &doc.when).map_err(|error| Error::Invalid {
+                name: doc.name.clone(),
+                errors: vec![error],
+            })?;
+        for namespace in when_namespaces {
+            if !is_authoritative(&namespace) {
+                return Err(Error::NonAuthoritativeTrigger {
+                    name: doc.name,
+                    namespace,
+                });
+            }
+        }
+
         self.ensure_schema()?;
         Ok(self.kind().put(&path, &doc)?)
     }
+
+    /// The tree hash `doc` would compile to under this store's currently
+    /// published schema, without writing anything.
+    ///
+    /// `DEVPLAN-effect.md` D5's idempotence key for a pure advance is
+    /// `normal_form::hash({effect: <doc tree hash>, trigger: {ref, old,
+    /// new}})` -- this is that `<doc tree hash>`, the same identity
+    /// `define`'s commit binds, so an edited doc (a changed tree hash) is a
+    /// new identity for idempotence purposes, exactly the "edited effect is a
+    /// new effect" reading `DEVPLAN-effect.md`'s open questions section
+    /// recommends.
+    ///
+    /// # Errors
+    /// [`Error::Store`] if no schema is published yet, or compilation fails.
+    pub fn tree_hash(&self, doc: &EffectDoc) -> Result<gix::ObjectId, Error> {
+        Ok(self.kind().compile(doc)?)
+    }
+}
+
+/// Ref namespace prefixes `../git-anchor/ARCHITECTURE.md`'s rederive test
+/// classifies as *derived* rather than authoritative: state exactly
+/// reconstructible with zero information loss, which the architecture says is
+/// "[n]ever an attestation target, never an effect trigger."
+///
+/// Today that is exactly the cache namespace `DEVPLAN.md` Phase 6 has not
+/// built yet (`DEVPLAN-effect.md` C5: "Cache refs stay ... flag-gated"): a
+/// promoted, signed claim is what turns a cached answer authoritative, and
+/// the cache ref itself stays a pure function of the query it caches. Every
+/// namespace this crate's own tests use -- `refs/meta/*`, `refs/claims/*`,
+/// `refs/schema`, and this crate's own `refs/intent/*`/`refs/effects/log` --
+/// exists only because something was signed into it, so the rederive test
+/// puts them on the authoritative side by default; this list names the
+/// exception, not the rule.
+const DERIVED_NAMESPACE_PREFIXES: &[&str] = &["refs/cache/"];
+
+/// Whether `namespace` is authoritative under the rederive test above.
+fn is_authoritative(namespace: &Namespace) -> bool {
+    !DERIVED_NAMESPACE_PREFIXES
+        .iter()
+        .any(|prefix| namespace.as_str().starts_with(prefix))
 }
 
 /// Project a stored [`EffectDoc`] into the shape
@@ -362,5 +435,34 @@ mod tests {
             store.list().unwrap().is_empty(),
             "no effect doc should have been written"
         );
+    }
+
+    /// D3: "Triggers read authoritative refs only." `refs/cache/*` is
+    /// `DEVPLAN-effect.md` C5's still-unbuilt cache namespace -- the one
+    /// concrete "delete it, rederive it losslessly" example
+    /// `../git-anchor/ARCHITECTURE.md`'s Core invariant names -- and every
+    /// namespace this crate's own effect docs, intents, and transition log
+    /// use (`refs/meta/*`, `refs/claims/*`, `refs/intent/*`,
+    /// `refs/effects/log/*`) is on the authoritative side, because each
+    /// exists only because something was signed into it.
+    ///
+    /// This pins the classification directly rather than end to end through
+    /// `define`: no EDB predicate is backed by `refs/cache/*` yet (cache
+    /// refs are `DEVPLAN.md` Phase 6, unbuilt), so no rule-language body's
+    /// footprint can reach it today, and there is nothing to write a `when`
+    /// against. `define`'s own call to [`is_authoritative`] (see its
+    /// `when_namespaces` loop) is what turns this into a rejection the
+    /// moment such a predicate exists -- no code change needed here when it
+    /// does.
+    #[test]
+    fn derived_namespaces_are_not_authoritative() {
+        assert!(!is_authoritative(&Namespace::new(
+            "refs/cache/query/abc123"
+        )));
+        assert!(!is_authoritative(&Namespace::new("refs/cache/*")));
+        assert!(is_authoritative(&Namespace::new("refs/meta/members/*")));
+        assert!(is_authoritative(&Namespace::new("refs/claims/*")));
+        assert!(is_authoritative(&Namespace::new("refs/effects/log/*")));
+        assert!(is_authoritative(&Namespace::new("refs/intent/*")));
     }
 }
