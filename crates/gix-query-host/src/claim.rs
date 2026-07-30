@@ -54,9 +54,18 @@ use gix_attest::{
     CLAIM_TARGET_KIND, Claim, Claims, Envelope, REVOCATION_KIND, Target, Verdict, target_key,
 };
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey, Value};
-use gix_store::{RefSegment, RepoStore};
+use gix_store::RefSegment;
 
+use crate::refs::HostRefs;
 use crate::util::{backend, backend_msg, fact, parse_oid, sym_oid};
+
+/// The store type every claim read in this crate goes through: `gix-store`'s
+/// generic `Store`, over [`HostRefs`] rather than the fixed `RepoStore` type
+/// alias -- `RepoStore<'r>` is `Store<GixRefStore<'r>, _>` specifically, and
+/// what makes [`crate::facts::RepoFacts::as_of`] reach claim reads at all is
+/// that this crate has exactly one ref-backed `Store` shape, parametrized by
+/// the same [`HostRefs`] `member.rs` and `anchor.rs` read through.
+type HostStore<'r> = gix_store::Store<HostRefs<'r>, &'r gix::OdbHandle>;
 
 /// The [`Target::kind`] label a claim about an anchor carries.
 ///
@@ -94,35 +103,32 @@ const MAX_REVOCATION_HOPS: usize = 32;
 /// the store borrows the repository, and [`Claims`] borrows the store: three
 /// lifetimes that are one object's business, not each caller's.
 struct ClaimReader<'r> {
-    store: RepoStore<'r>,
+    store: HostStore<'r>,
     /// The predicate being answered, for error attribution.
     key: PredicateKey,
 }
 
 impl<'r> ClaimReader<'r> {
-    /// Open `repo`'s claims. The layout is `gix-attest`'s own, which is what
-    /// puts claim refs at `refs/claims/<target-key>`; naming it here rather
-    /// than spelling the prefix keeps this crate from having a second opinion
-    /// about where claims live.
-    fn open(repo: &'r gix::Repository, key: &PredicateKey) -> Self {
+    /// Open `repo`'s claims over `refs`, live or as of an override set --
+    /// [`crate::facts::RepoFacts::as_of`]'s reach into claim reads. The
+    /// layout is `gix-attest`'s own, which is what puts claim refs at
+    /// `refs/claims/<target-key>`; naming it here rather than spelling the
+    /// prefix keeps this crate from having a second opinion about where
+    /// claims live.
+    fn open(repo: &'r gix::Repository, refs: HostRefs<'r>, key: &PredicateKey) -> Self {
         Self {
-            store: RepoStore::open_with_layout(repo, gix_attest::layout()),
+            store: gix_store::Store::with_layout(refs, &repo.objects, gix_attest::layout()),
             key: key.clone(),
         }
     }
 
-    fn claims(&self) -> Claims<'_, gix_store::GixRefStore<'r>, &'r gix::OdbHandle> {
+    fn claims(&self) -> Claims<'_, HostRefs<'r>, &'r gix::OdbHandle> {
         Claims::open(&self.store)
     }
 
     fn kind(
         &self,
-    ) -> gix_store::Kind<
-        '_,
-        gix_store::Typed<Envelope>,
-        gix_store::GixRefStore<'r>,
-        &'r gix::OdbHandle,
-    > {
+    ) -> gix_store::Kind<'_, gix_store::Typed<Envelope>, HostRefs<'r>, &'r gix::OdbHandle> {
         self.store.kind::<Envelope>(claim_segment())
     }
 
@@ -336,11 +342,12 @@ impl ClaimRelation {
 
 pub(crate) fn claim_facts<'a>(
     repo: &'a gix::Repository,
+    refs: HostRefs<'a>,
     key: &PredicateKey,
     bound: Bindings<'_>,
     attribute: bool,
 ) -> Result<Facts<'a>, HostError> {
-    let reader = ClaimReader::open(repo, key);
+    let reader = ClaimReader::open(repo, refs, key);
     let found = match bound.first() {
         Some(Some(v)) => reader.one(parse_oid(key, v)?)?.into_iter().collect(),
         _ => reader.all()?,
@@ -358,6 +365,7 @@ pub(crate) fn claim_facts<'a>(
 /// name a different field than `key` itself does.
 pub(crate) fn envelope_facts<'a>(
     repo: &'a gix::Repository,
+    refs: HostRefs<'a>,
     key: &PredicateKey,
     bound: Bindings<'_>,
     attribute: bool,
@@ -367,7 +375,7 @@ pub(crate) fn envelope_facts<'a>(
         Some(Some(v)) => Some(v.clone()),
         Some(None) | None => None,
     };
-    let reader = ClaimReader::open(repo, key);
+    let reader = ClaimReader::open(repo, refs, key);
     let found: Vec<(String, Claim)> = match bound.first() {
         Some(Some(v)) => reader.one(parse_oid(key, v)?)?.into_iter().collect(),
         _ => reader.all()?,
@@ -404,13 +412,14 @@ pub(crate) fn envelope_facts<'a>(
 ///
 /// A claim whose signature does not verify pins nothing: verification happens
 /// before the payload is read, so a forged pin cannot dominate the lattice.
-pub(crate) fn rebind_pin_locs(
-    repo: &gix::Repository,
+pub(crate) fn rebind_pin_locs<'r>(
+    repo: &'r gix::Repository,
+    refs: HostRefs<'r>,
     key: &PredicateKey,
     anchor: ObjectId,
     rev: ObjectId,
 ) -> Result<Vec<String>, HostError> {
-    let reader = ClaimReader::open(repo, key);
+    let reader = ClaimReader::open(repo, refs, key);
     let target = Target {
         kind: ANCHOR_TARGET_KIND.to_owned(),
         id: anchor.into(),
@@ -495,9 +504,9 @@ mod tests {
     fn facts_of(repo: &gix::Repository, name: &str, bound: &[Option<Value>]) -> Vec<Vec<Value>> {
         let key = PredicateKey::new(name, bound.len());
         let facts = if bound.len() == 1 {
-            claim_facts(repo, &key, bound, false)
+            claim_facts(repo, HostRefs::live(repo), &key, bound, false)
         } else {
-            envelope_facts(repo, &key, bound, false)
+            envelope_facts(repo, HostRefs::live(repo), &key, bound, false)
         };
         facts
             .expect("facts")
@@ -683,19 +692,19 @@ mod tests {
         let repo = r.f.open();
         let key = PredicateKey::new("cand", 5);
         assert_eq!(
-            rebind_pin_locs(&repo, &key, anchor, rev).expect("pins"),
+            rebind_pin_locs(&repo, HostRefs::live(&repo), &key, anchor, rev).expect("pins"),
             vec!["src/refdb/store.rs:118-568".to_owned()],
         );
 
         let other = ObjectId::null(gix::hash::Kind::Sha1);
         assert!(
-            rebind_pin_locs(&repo, &key, anchor, other)
+            rebind_pin_locs(&repo, HostRefs::live(&repo), &key, anchor, other)
                 .expect("pins")
                 .is_empty(),
             "a pin is pinned at one rev"
         );
         assert!(
-            rebind_pin_locs(&repo, &key, other, rev)
+            rebind_pin_locs(&repo, HostRefs::live(&repo), &key, other, rev)
                 .expect("pins")
                 .is_empty(),
             "and about one anchor"

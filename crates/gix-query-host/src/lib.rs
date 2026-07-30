@@ -33,6 +33,7 @@ mod commit;
 mod facts;
 mod line;
 mod member;
+mod refs;
 mod tree;
 mod util;
 

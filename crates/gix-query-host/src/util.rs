@@ -45,23 +45,6 @@ pub(crate) fn backend(
     }
 }
 
-/// Wrap an already-boxed backend failure as [`HostError::Backend`].
-///
-/// `gix`'s own reference-iteration API combines loose and packed refs behind
-/// one iterator and boxes its error for that reason, so its `Item` is already
-/// `Result<_, Box<dyn Error + Send + Sync>>` rather than a concrete error
-/// type -- [`backend`] cannot take it, because a trait object does not itself
-/// implement [`std::error::Error`].
-pub(crate) fn backend_boxed(
-    key: &PredicateKey,
-    source: Box<dyn std::error::Error + Send + Sync>,
-) -> HostError {
-    HostError::Backend {
-        key: key.clone(),
-        source,
-    }
-}
-
 /// Box a plain message as [`HostError::Backend`], for a failure with no
 /// underlying [`std::error::Error`] value -- a tree missing an expected
 /// entry, say.

@@ -9,10 +9,18 @@
 
 use gix::ObjectId;
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey};
+use gix_refstore::{RefName, RefPrefix, RefStore};
 
-use crate::util::{backend, backend_boxed, backend_msg, fact, sym_oid, try_parse_hex};
+use crate::refs::HostRefs;
+use crate::util::{backend, backend_msg, fact, sym_oid, try_parse_hex};
 
 const MEMBERS_PREFIX: &str = "refs/meta/members/";
+
+/// [`MEMBERS_PREFIX`], without the trailing slash [`RefPrefix`] does not
+/// want -- [`HostRefs::prefixed`] appends its own separator.
+fn members_namespace() -> RefPrefix {
+    RefPrefix::new(MEMBERS_PREFIX.trim_end_matches('/')).expect("built-in ref prefix is valid")
+}
 
 /// A member ref's standing: active or revoked. Absence is `None` at the call
 /// site (`status` returns `Option<MemberStatus>`), not a third variant here --
@@ -43,20 +51,15 @@ impl MemberStatus {
 /// `member`'s standing, or `None` for no such member ref.
 fn status(
     repo: &gix::Repository,
+    refs: &HostRefs<'_>,
     key: &PredicateKey,
     member: ObjectId,
 ) -> Result<Option<MemberStatus>, HostError> {
     let refname = format!("{MEMBERS_PREFIX}{member}");
-    let Some(mut reference) = repo
-        .try_find_reference(&refname)
-        .map_err(|error| backend(key, error))?
-    else {
+    let name = RefName::new(refname.as_str()).map_err(|error| backend(key, error))?;
+    let Some(target) = refs.read(&name).map_err(|error| backend(key, error))? else {
         return Ok(None);
     };
-    let target = reference
-        .peel_to_id()
-        .map_err(|error| backend(key, error))?
-        .detach();
     let kind = repo
         .try_find_header(target)
         .map_err(|error| backend(key, error))?
@@ -75,32 +78,29 @@ fn status(
 /// of it that is actually a member.
 fn all(
     repo: &gix::Repository,
+    refs: &HostRefs<'_>,
     key: &PredicateKey,
 ) -> Result<Vec<(ObjectId, MemberStatus, String)>, HostError> {
-    let platform = repo.references().map_err(|error| backend(key, error))?;
     let mut out = Vec::new();
-    for reference in platform
-        .prefixed(MEMBERS_PREFIX)
+    for (name, target) in refs
+        .prefixed(&members_namespace())
         .map_err(|error| backend(key, error))?
     {
-        let mut reference = reference.map_err(|error| backend_boxed(key, error))?;
-        let name = reference.name().as_bstr().to_string();
+        let name = name.as_str();
+        // `RefStore::prefixed` only ever returns names under the prefix it
+        // was asked for.
         let leaf = name
             .strip_prefix(MEMBERS_PREFIX)
-            .ok_or_else(|| backend_msg(key, format!("{name} is outside its own prefix")))?;
+            .expect("HostRefs::prefixed only returns names under the queried prefix");
         let Some(member) = try_parse_hex(leaf.as_bytes()) else {
             continue;
         };
-        let target = reference
-            .peel_to_id()
-            .map_err(|error| backend(key, error))?
-            .detach();
         let kind = repo
             .try_find_header(target)
             .map_err(|error| backend(key, error))?
             .ok_or_else(|| backend_msg(key, format!("{name} targets a missing object")))?
             .kind();
-        out.push((member, MemberStatus::of(kind), name));
+        out.push((member, MemberStatus::of(kind), name.to_owned()));
     }
     out.sort();
     Ok(out)
@@ -108,6 +108,7 @@ fn all(
 
 pub(crate) fn member_facts<'a>(
     repo: &'a gix::Repository,
+    refs: &HostRefs<'_>,
     key: &PredicateKey,
     bound: Bindings<'_>,
     attribute: bool,
@@ -123,7 +124,7 @@ pub(crate) fn member_facts<'a>(
                 return Ok(Box::new(std::iter::empty()));
             };
             let refname = format!("{MEMBERS_PREFIX}{member}");
-            let out: Vec<Result<Fact, HostError>> = match status(repo, key, member)? {
+            let out: Vec<Result<Fact, HostError>> = match status(repo, refs, key, member)? {
                 Some(MemberStatus::Active | MemberStatus::Revoked) => {
                     vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))]
                 }
@@ -132,7 +133,7 @@ pub(crate) fn member_facts<'a>(
             Ok(Box::new(out.into_iter()))
         }
         _ => {
-            let out: Vec<_> = all(repo, key)?
+            let out: Vec<_> = all(repo, refs, key)?
                 .into_iter()
                 .map(|(member, _status, name)| {
                     Ok(fact(vec![sym_oid(member)], Some(&name), attribute))
@@ -145,6 +146,7 @@ pub(crate) fn member_facts<'a>(
 
 pub(crate) fn revoked_facts<'a>(
     repo: &'a gix::Repository,
+    refs: &HostRefs<'_>,
     key: &PredicateKey,
     bound: Bindings<'_>,
     attribute: bool,
@@ -155,7 +157,7 @@ pub(crate) fn revoked_facts<'a>(
                 return Ok(Box::new(std::iter::empty()));
             };
             let refname = format!("{MEMBERS_PREFIX}{member}");
-            let out: Vec<Result<Fact, HostError>> = match status(repo, key, member)? {
+            let out: Vec<Result<Fact, HostError>> = match status(repo, refs, key, member)? {
                 Some(MemberStatus::Revoked) => {
                     vec![Ok(fact(vec![sym_oid(member)], Some(&refname), attribute))]
                 }
@@ -164,7 +166,7 @@ pub(crate) fn revoked_facts<'a>(
             Ok(Box::new(out.into_iter()))
         }
         _ => {
-            let out: Vec<_> = all(repo, key)?
+            let out: Vec<_> = all(repo, refs, key)?
                 .into_iter()
                 .filter(|(_, status, _)| *status == MemberStatus::Revoked)
                 .map(|(member, _status, name)| {
@@ -200,10 +202,11 @@ mod tests {
         let active = register(&f, "Alice", "alice@example.com", false);
         let gone = register(&f, "Bob", "bob@example.com", true);
         let repo = f.open();
+        let refs = HostRefs::live(&repo);
         let member_key = PredicateKey::new("member", 1);
         let revoked_key = PredicateKey::new("revoked", 1);
 
-        let members: Vec<_> = member_facts(&repo, &member_key, &[None], false)
+        let members: Vec<_> = member_facts(&repo, &refs, &member_key, &[None], false)
             .expect("facts")
             .collect::<Result<Vec<_>, _>>()
             .expect("ok")
@@ -214,7 +217,7 @@ mod tests {
         assert!(members.contains(&Value::sym(active.as_str())));
         assert!(members.contains(&Value::sym(gone.as_str())));
 
-        let revoked: Vec<_> = revoked_facts(&repo, &revoked_key, &[None], false)
+        let revoked: Vec<_> = revoked_facts(&repo, &refs, &revoked_key, &[None], false)
             .expect("facts")
             .collect::<Result<Vec<_>, _>>()
             .expect("ok")
@@ -230,10 +233,11 @@ mod tests {
         let f = Fixture::init(dir.path().join("r"));
         f.commit_file("a.txt", "a\n", "first");
         let repo = f.open();
+        let refs = HostRefs::live(&repo);
         let key = PredicateKey::new("member", 1);
         let stranger = f.hash_object("nobody");
 
-        let out = member_facts(&repo, &key, &[Some(Value::sym(stranger))], false)
+        let out = member_facts(&repo, &refs, &key, &[Some(Value::sym(stranger))], false)
             .expect("facts")
             .collect::<Result<Vec<_>, _>>()
             .expect("ok");
@@ -254,10 +258,11 @@ mod tests {
         let head = f.commit_file("a.txt", "a\n", "first");
         f.update_ref(&format!("{MEMBERS_PREFIX}joey"), &head);
         let repo = f.open();
+        let refs = HostRefs::live(&repo);
         let member_key = PredicateKey::new("member", 1);
         let revoked_key = PredicateKey::new("revoked", 1);
 
-        let members: Vec<_> = member_facts(&repo, &member_key, &[None], false)
+        let members: Vec<_> = member_facts(&repo, &refs, &member_key, &[None], false)
             .expect("facts must not hard-fail on a foreign ref")
             .collect::<Result<Vec<_>, _>>()
             .expect("ok")
@@ -266,7 +271,7 @@ mod tests {
             .collect();
         assert_eq!(members, vec![Value::sym(active.as_str())]);
 
-        let revoked: Vec<_> = revoked_facts(&repo, &revoked_key, &[None], false)
+        let revoked: Vec<_> = revoked_facts(&repo, &refs, &revoked_key, &[None], false)
             .expect("facts must not hard-fail on a foreign ref")
             .collect::<Result<Vec<_>, _>>()
             .expect("ok");
@@ -283,12 +288,19 @@ mod tests {
         let f = Fixture::init(dir.path().join("r"));
         f.commit_file("a.txt", "a\n", "first");
         let repo = f.open();
+        let refs = HostRefs::live(&repo);
         let key = PredicateKey::new("member", 1);
 
-        let out = member_facts(&repo, &key, &[Some(Value::sym("alice@example.com"))], false)
-            .expect("facts")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("ok");
+        let out = member_facts(
+            &repo,
+            &refs,
+            &key,
+            &[Some(Value::sym("alice@example.com"))],
+            false,
+        )
+        .expect("facts")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("ok");
         assert!(out.is_empty());
     }
 }

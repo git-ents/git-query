@@ -15,13 +15,21 @@
 use gix::ObjectId;
 use gix_anchor::{Anchor, Binding, CaptureHandle};
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey};
+use gix_refstore::{RefName, RefPrefix, RefStore};
 
-use crate::util::{backend, backend_boxed, fact, parse_oid, sym_oid};
+use crate::refs::HostRefs;
+use crate::util::{backend, fact, parse_oid, sym_oid};
 
 const ANCHOR_PREFIX: &str = "refs/anchors/";
 
 fn anchor_ref(id: ObjectId) -> String {
     format!("{ANCHOR_PREFIX}{id}")
+}
+
+/// [`ANCHOR_PREFIX`], without the trailing slash [`RefPrefix`] does not want
+/// -- [`HostRefs::prefixed`] appends its own separator.
+fn anchors_namespace() -> RefPrefix {
+    RefPrefix::new(ANCHOR_PREFIX.trim_end_matches('/')).expect("built-in ref prefix is valid")
 }
 
 /// The [`Anchor`] `refs/anchors/<id>` names, or `None` when no such ref
@@ -31,20 +39,14 @@ fn anchor_ref(id: ObjectId) -> String {
 /// a caller may name any oid.
 pub(crate) fn lookup(
     repo: &gix::Repository,
+    refs: &HostRefs<'_>,
     key: &PredicateKey,
     id: ObjectId,
 ) -> Result<Option<Anchor>, HostError> {
-    let refname = anchor_ref(id);
-    let Some(mut reference) = repo
-        .try_find_reference(&refname)
-        .map_err(|error| backend(key, error))?
-    else {
+    let name = RefName::new(anchor_ref(id)).map_err(|error| backend(key, error))?;
+    let Some(handle_oid) = refs.read(&name).map_err(|error| backend(key, error))? else {
         return Ok(None);
     };
-    let handle_oid = reference
-        .peel_to_id()
-        .map_err(|error| backend(key, error))?
-        .detach();
     match Binding::deserialize(&CaptureHandle::from(handle_oid), repo) {
         Ok(Binding::Position(anchor)) => Ok(Some(anchor)),
         Ok(_) | Err(_) => Ok(None),
@@ -53,6 +55,7 @@ pub(crate) fn lookup(
 
 pub(crate) fn facts<'a>(
     repo: &'a gix::Repository,
+    refs: &HostRefs<'_>,
     key: &PredicateKey,
     bound: Bindings<'_>,
     attribute: bool,
@@ -60,7 +63,7 @@ pub(crate) fn facts<'a>(
     match bound.first() {
         Some(Some(v)) => {
             let id = parse_oid(key, v)?;
-            let out: Vec<Result<Fact, HostError>> = match lookup(repo, key, id)? {
+            let out: Vec<Result<Fact, HostError>> = match lookup(repo, refs, key, id)? {
                 Some(_) => vec![Ok(fact(
                     vec![sym_oid(id)],
                     Some(&anchor_ref(id)),
@@ -71,22 +74,20 @@ pub(crate) fn facts<'a>(
             Ok(Box::new(out.into_iter()))
         }
         _ => {
-            let platform = repo.references().map_err(|error| backend(key, error))?;
             let mut out = Vec::new();
-            for reference in platform
-                .prefixed(ANCHOR_PREFIX)
+            for (name, _target) in refs
+                .prefixed(&anchors_namespace())
                 .map_err(|error| backend(key, error))?
             {
-                let reference = reference.map_err(|error| backend_boxed(key, error))?;
-                let refname = reference.name().as_bstr().to_string();
+                let refname = name.as_str();
                 let Some(id) = refname
                     .strip_prefix(ANCHOR_PREFIX)
                     .and_then(|hex| ObjectId::from_hex(hex.as_bytes()).ok())
                 else {
                     continue;
                 };
-                if lookup(repo, key, id)?.is_some() {
-                    out.push(Ok(fact(vec![sym_oid(id)], Some(&refname), attribute)));
+                if lookup(repo, refs, key, id)?.is_some() {
+                    out.push(Ok(fact(vec![sym_oid(id)], Some(refname), attribute)));
                 }
             }
             out.sort_by(|a, b| {
@@ -161,7 +162,8 @@ mod tests {
         .expect("write ref");
 
         let key = PredicateKey::new("anchor", 1);
-        let out: Vec<_> = facts(&repo, &key, &[None], false)
+        let refs = HostRefs::live(&repo);
+        let out: Vec<_> = facts(&repo, &refs, &key, &[None], false)
             .expect("facts")
             .collect::<Result<Vec<_>, _>>()
             .expect("ok");
@@ -170,6 +172,7 @@ mod tests {
 
         let out = facts(
             &repo,
+            &refs,
             &key,
             &[Some(Value::sym(commit_id.to_string()))],
             false,
@@ -179,10 +182,16 @@ mod tests {
         .expect("ok");
         assert!(out.is_empty(), "a commit binding is not an anchor");
 
-        let out = facts(&repo, &key, &[Some(Value::sym("0".repeat(40)))], false)
-            .expect("facts")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("ok");
+        let out = facts(
+            &repo,
+            &refs,
+            &key,
+            &[Some(Value::sym("0".repeat(40)))],
+            false,
+        )
+        .expect("facts")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("ok");
         assert!(out.is_empty(), "an unregistered oid is not an anchor");
     }
 }

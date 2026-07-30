@@ -13,6 +13,10 @@ gix-anchor = { git = "https://github.com/git-ents/git-anchor.git" }
 # consumer contract `claim.rs` is written against.
 gix-attest = { git = "https://github.com/git-ents/git-anchor.git", rev = "4b98ae23f47a5415416e68bae7c88913798ad3ea" }
 gix-store = { git = "https://github.com/git-ents/git-store.git" }
+# `AsOfRefStore`, not re-exported by `gix-store`: the read-only overlay
+# `RepoFacts::as_of` is built on (`refs.rs`). Same repo as `gix-store`, so the
+# two move together under one `cargo update`.
+gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
 facet = { version = "0.50.0-rc.0", features = ["reflect"] }
 gix-query-ir = { path = "../gix-query-ir" }
 gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision", "blob-diff"] }

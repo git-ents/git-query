@@ -9,6 +9,7 @@
 
 use gix_query_ir::{Bindings, FactSource, Facts, HostError, PredicateKey};
 
+use crate::refs::HostRefs;
 use crate::{anchor, author, claim, commit, line, member, tree};
 
 /// The EDB names and arities [`RepoFacts`] answers for -- kept as one list so
@@ -57,18 +58,26 @@ impl FactSource for RepoFacts<'_> {
         bound: Bindings<'_>,
         attribute: bool,
     ) -> Result<Facts<'a>, HostError> {
+        // `member`, `claim` (and its envelope relations), and `anchor` are
+        // the ref-glob-backed EDB -- the ones `HostRefs` exists for (see
+        // that module's doc). Built live here, once per dispatch: there is
+        // no override set yet at this point in the crate's history (that
+        // lands with `RepoFacts::as_of`), so this is exactly the raw
+        // `gix::Repository` reads `member.rs`/`anchor.rs` used to make
+        // directly, routed through the one seam instead.
+        let refs = HostRefs::live(self.repo);
         match (key.name.as_ref(), key.arity) {
             ("commit", 1) => commit::facts(self.repo, key, bound, attribute),
             ("parent", 2) => commit::parent_facts(self.repo, key, bound, attribute),
             ("tree_entry", 3) => tree::facts(self.repo, key, bound, attribute),
             ("author", 2) => author::facts(self.repo, key, bound, attribute),
-            ("member", 1) => member::member_facts(self.repo, key, bound, attribute),
-            ("revoked", 1) => member::revoked_facts(self.repo, key, bound, attribute),
-            ("claim", 1) => claim::claim_facts(self.repo, key, bound, attribute),
+            ("member", 1) => member::member_facts(self.repo, &refs, key, bound, attribute),
+            ("revoked", 1) => member::revoked_facts(self.repo, &refs, key, bound, attribute),
+            ("claim", 1) => claim::claim_facts(self.repo, refs, key, bound, attribute),
             ("kind", 2) | ("target", 2) | ("signer", 2) | ("verdict", 2) => {
-                claim::envelope_facts(self.repo, key, bound, attribute)
+                claim::envelope_facts(self.repo, refs, key, bound, attribute)
             }
-            ("anchor", 1) => anchor::facts(self.repo, key, bound, attribute),
+            ("anchor", 1) => anchor::facts(self.repo, &refs, key, bound, attribute),
             ("line", 2) => line::facts(self.repo, key, bound, attribute),
             _ => Err(HostError::NoProvider(key.clone())),
         }

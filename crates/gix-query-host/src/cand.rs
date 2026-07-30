@@ -60,6 +60,7 @@ use gix_anchor::{Candidate, Oracle};
 use gix_query_ir::{Bindings, Builtin, HostError, PredicateKey, Value};
 
 use crate::claim::rebind_pin_locs;
+use crate::refs::HostRefs;
 use crate::util::{backend, backend_msg, parse_oid};
 
 /// Basis points per unit of confidence: `cand`'s `C` column is
@@ -198,13 +199,23 @@ fn candidates(
     rev_oid: ObjectId,
     target_tree: &gix::Tree<'_>,
 ) -> Result<Vec<Row>, HostError> {
+    // `cand` is a builtin, not an EDB predicate: `gix-query-ir`'s registry
+    // declares no `Backing` for it (`BuiltinEntry` has no such field), so a
+    // rule calling it contributes no namespace to any footprint
+    // (`gix_query_check::read_namespaces` only ever projects `PredicateEntry`
+    // backings). `gix-effect`'s trigger detection therefore never selects an
+    // effect on `cand`/`bind` alone as a candidate for a ref transition, and
+    // this leg of the read seam has nothing to answer "as of" -- always live.
+    // Built fresh per leg below (as cheap as the `GixRefStore` it wraps)
+    // rather than shared, since `rebind_pin_locs` needs to own one.
+
     let mut out = Vec::new();
 
-    for loc in rebind_pin_locs(repo, key, anchor_oid, rev_oid)? {
+    for loc in rebind_pin_locs(repo, HostRefs::live(repo), key, anchor_oid, rev_oid)? {
         out.push(("pin", basis_points(1.0), loc));
     }
 
-    if let Some(anchor) = crate::anchor::lookup(repo, key, anchor_oid)? {
+    if let Some(anchor) = crate::anchor::lookup(repo, &HostRefs::live(repo), key, anchor_oid)? {
         let rev_text = rev_oid.to_string();
         let anchor_id = gix_anchor::AnchorId::from(anchor_oid);
 
