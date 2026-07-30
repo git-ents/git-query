@@ -30,27 +30,53 @@ And **one way to do things**: no second engine, no stable/nightly split, no trai
 
 ---
 
-## 0. Simplification decision (2026-07-30): eager evaluation supersedes modes, magic sets, and the demand loop
+## 0. Simplification decision (2026-07-30, corrected 2026-07-31): eager evaluation for ref-glob predicates; a narrow cut everywhere else
 
 The project's scope is now explicitly experimental — the question being answered is whether the core idea holds, not whether queries over large repos are affordable on first run.
-Under that scope, the heaviest machinery in the plan defends against a cost we have decided to pay differently, and it goes.
+Under that scope, the heaviest machinery in the plan defends against a cost we could pay differently — but the decision as first written does not survive contact with the registry it claims to simplify.
+
+**This section originally claimed eager evaluation supersedes the mode system, the magic-set rewrite, and the demand loop outright.**
+**It does not.**
+A design review found three load-bearing errors, each re-verified against the code rather than taken on faith:
+
+1. **The enumerability claim is false.**
+   "Every registry predicate must therefore be finitely enumerable given the footprint — which every git-backed base predicate is" is wrong for five of the thirteen host EDB predicates: `commit/1`, `parent/2`, `tree_entry/3`, `author/2`, and `line/2` are required-bound by design (`crates/gix-query-ir/src/registry.rs:571-828`, the `edb(...)` declarations and their comments — `commit`'s is explicit that "enumerating every commit in a repository is the unaffordable materialization mode discipline exists to prevent").
+   The eight that *are* enumerable are `member`, `revoked`, `claim`, `kind`, `target`, `signer`, `verdict`, and `anchor` — every one of them ref-glob-backed, never content-addressed.
+2. **The evaluation mechanism this section proposed contradicts the affordability story that funds it.**
+   `Registry::validate` (`crates/gix-query-ir/src/registry.rs:439-449`) actively rejects any `ContentAddressed` predicate that offers an all-free mode, returning `Error::EnumerableContentAddressed`.
+   Its own doc comment gives the reason: an all-free `parent/2` reads the whole commit graph and puts nothing content-addressed in the footprint, so the answer cache this section relies on (§1.1's ref-snapshot digest, below) has no key for the result.
+   An evaluator that enumerates every base predicate in the goal's footprint to fixpoint would have to enumerate `parent/2` whole — which `validate` exists specifically to refuse.
+3. **`bind/5` cannot be deferred, and this section did not notice it conflicted with the decision that made `bind/5` permanent.**
+   `cand/5` is required-bound in two of its five argument positions — the anchor and the revision (`crates/gix-query-ir/src/registry.rs:715`, `ModeVector::new(vec![Bound, Bound, Free, Free, Free])`) — and it lives in `CORE_MODULE_SOURCE` (`crates/gix-query-rules/src/assemble.rs:44`), which `assemble` folds into *every* checked program, published rule modules or none.
+   `../git-anchor/ARCHITECTURE.md:229` calls `bind/5` "the only user-facing resolution."
+   "Defer bound-argument builtins," below, would mean deleting the one thing the whole product family resolves through. §0 (`9ee4406`) landed after `bind/5` went in (`e6bb2be`), the same day — a conflict this section failed to address, not one it could not have known about.
+
+**The corrected decision — a narrow cut.**
+Eager footprint materialization applies only to the ref-glob-backed EDB: `member`, `revoked`, `claim`, `kind`, `target`, `signer`, `verdict`, `anchor`.
+For everything else — the five required-bound EDB predicates and the required-bound builtins (`cand/5`, and through it `bind/5`) — a required-bound input-materialization pass survives, in reduced form: given the goal's own bound inputs, walk or query exactly the reachable extension (an ancestry walk seeded from a bound `Rev` for `parent`, a tree walk for `tree_entry`, and so on), never the whole relation.
+This is the mode system's actual runtime payload, with the general magic-set machinery and the round-based demand loop stripped back to the one case that still needs them: a required-bound EDB or builtin call.
 
 **Cut:**
 
-- The **mode system** (`mode.rs`, adornments, `ModeSet`, pass 8) and with it §2.10's magic-set rewrite (`rewrite.rs`) and the demand loop (`demand.rs`).
-  Together with their share of IR, registry mode declarations, and tests this is ~2,700 lines of the hardest code in the plan.
-- **Bound-argument builtins** — `span_diff(+Blob, +Covered, …)` (§1.8) and `introduced/2` (§1.7) — are deferred, not redesigned.
-  They were the only thing the mode system was load-bearing for once evaluation is eager; if a future vocabulary needs one, the mode system returns as a whole, not as a special case.
-- **Pass 6** (caps) — by its own admission a lint, not a soundness pass.
-- **Dead code already unconsumed:** `provenance.rs` (§2.9's traits; `trace.rs` built its own `DerivationTree` from Nemo's tracer instead) and `canonical.rs` (no caller until the cache subsystem exists; restore from git history when it does).
+- **The general mode system** — arbitrary-recursion mode inference over program-defined predicates, the magic-set rewrite (`rewrite.rs`), and the round-based demand loop (`demand.rs`) — for the eight ref-glob predicates and any rule built only from them.
+  Their footprint is read whole, once, so no adornment is needed.
+- **Bound-argument builtins** `span_diff(+Blob, +Covered, …)` (§1.8) and `introduced/2` (§1.7) are still deferred, not redesigned.
+  This is unaffected by the correction above; neither is required-bound in a way the eight ref-glob predicates or `cand`/`bind` are, and neither has a caller yet.
+- **Pass 6** (caps) — re-confirmed by reading its own module doc before cutting it (`crates/gix-query-check/src/pass6_caps.rs`): "bound validation cost itself... a cap is what keeps 'near-linear' from being tested against pathological input nobody would actually author" — a lint, not a soundness pass, exactly as originally characterized.
+- **Dead code already unconsumed:** `provenance.rs` — re-confirmed nothing outside it, and nothing but its own re-export in `gix-query-ir`'s `lib.rs`, references `Provenance`, `Derivation`, `CollectingProvenance`, or the rest; `trace.rs` built its own `DerivationTree` from Nemo's tracer instead, and imports nothing from `provenance.rs`.
+
+**Not cut, contrary to what this section originally said: `canonical.rs`.**
+It was marked dead with "restore from git history when the cache lands."
+But the cache *is* this section's own affordability story, and §1.1 is its canonical form — deleting a file the same document plans to restore the moment its own cache design lands is churn, not simplification.
+It stays, uncalled, until the cache subsystem gives it a caller.
 
 **Kept, unchanged:** stratified negation and pass 5 (~280 lines, and the kernel's own rules are negation-shaped — `unsigned`, `dangling-anchor`, "member and not revoked"); passes 1–5, 7, 9, 10; Nemo at the pinned rev with its conformance suite; the `ascent` kernel and the ascent-vs-Nemo differential proptest, which remains the correctness story.
 
-**Replacement — eager footprint materialization:** for each base predicate in the goal's transitive footprint (pass 7, which was already an analysis with no errors), enumerate its full extension through `FactSource`, hand everything to Nemo as tables, run once to fixpoint, read back the goal relation.
-No rounds, no `magic_` relations, no re-running from cold.
-Every registry predicate must therefore be finitely enumerable given the footprint — which every git-backed base predicate is.
+**Replacement — eager footprint materialization, scoped to the ref-glob EDB:** for each ref-glob-backed base predicate in the goal's transitive footprint (pass 7, which was already an analysis with no errors), enumerate its full extension through `FactSource`, hand everything to Nemo as tables, run once to fixpoint, read back the goal relation.
+No rounds, no `magic_` relations for these, no re-running from cold.
+For a required-bound EDB predicate or builtin the same footprint reaches, the required-bound pass supplies its extension instead, seeded from the goal's own bound inputs rather than enumerated cold — the mechanism finding 1 shows cannot be eager, and finding 2 shows cannot even be attempted without breaking the cache.
 
-**Affordability moves from demand-narrowing to amortization**, exploiting the fact that almost the entire EDB is content-addressed and immutable:
+**Affordability moves from demand-narrowing to amortization for the ref-glob EDB**, exploiting the fact that almost the entire EDB is content-addressed and immutable; the required-bound EDB was never a demand-loop problem in the general sense, since a single bound-seeded walk already touches only what a query asked for, which is what the required-bound pass computes directly:
 
 1. **Extraction cache, keyed by OID.**
    `tree_entry`, `parent`, claim payloads, anchor coverage — true forever once the object exists.
@@ -59,9 +85,20 @@ Every registry predicate must therefore be finitely enumerable given the footpri
    Retractions are new commits on the same refs, so any ref advance or deletion changes the digest and is automatically a miss — no invalidation logic, and the stale-verdict bug of §1.1 is impossible by construction.
    Because answers are only reused across *identical* snapshots, non-monotonicity of derivation under ref moves is irrelevant; negation costs the cache design nothing.
 
-First query after a ref advance pays re-derivation over mostly-cached extraction — proportional to the delta of new objects, which is the property the demand loop was buying.
+First query after a ref advance pays re-derivation over mostly-cached extraction — proportional to the delta of new objects, which is the property the demand loop was buying, and which the required-bound pass still buys for the five predicates that need it.
 
-**Sections this supersedes rather than deletes:** §2.10 (the rewrite decision and its SIPS payoff in §2.7), the pass-8 and mode entries wherever the nine-pass list is enumerated, the `gix-query-eval` row of §3's crate table (now: Nemo lowering, eager materialization, derivation-tree recovery), and §5's framing — affordability is still the real risk, but the answer is the two-level cache above, not demand.
+**The honest line-count saving is roughly 1,200 lines, not the ~2,700 this section originally claimed.**
+Pass 6 (141 lines, `crates/gix-query-check/src/pass6_caps.rs`) and `provenance.rs` (294 lines) go outright, unconditionally.
+The rest of the original estimate was the general mode system, the magic-set rewrite, and the demand loop in full; under the narrow cut, `mode.rs`'s `ModeSet`/adornment machinery, `pass8_modes.rs`, `rewrite.rs`, and `demand.rs` are not deleted, they are rewritten smaller, scoped to five EDB predicates and two builtins instead of an arbitrary program.
+`canonical.rs` stays, at zero net change either way.
+
+**What this does to the Definition of Done's `reach(+Rev, -C)` line.**
+That test survives, but what it is a test *of* narrows.
+It no longer asserts that the general mode system's magic-set rewrite kept `reach` demand-driven; it asserts that the required-bound materialization pass — the one piece of the original machinery this correction keeps — actually walks only `parent/2`'s reachable extension from a bound `Rev`, rather than materializing the whole commit graph that `Registry::validate` (finding 2, above) already refuses to let anything read unbound.
+The assertion itself is unchanged: touching only ancestors of `HEAD` at a fixture repo's `HEAD`, counted by EDB reads, not wall clock.
+
+**Sections this supersedes rather than deletes:** §2.10 in part — see the note at its end — and the `gix-query-eval` row of §3's crate table (now: Nemo lowering, eager materialization for the ref-glob EDB, required-bound materialization for the rest, derivation-tree recovery).
+The pass-8 and mode entries wherever the nine-pass list is enumerated are *not* superseded; pass 8 keeps running, scoped down. §5's framing stands as originally written — affordability is still the real risk, and the answer is still the two-level cache above plus the required-bound pass, not the general demand loop.
 
 ---
 
@@ -778,6 +815,12 @@ Three consequences, all of which need to be in the Phase 2 `eval` brief:
 
 The rewrite gets its own test, and with §2.8's oracle gone it is the only one guarding it: for programs where unrestricted bottom-up evaluation is affordable, rewritten and unrewritten runs must agree on the demanded subset.
 Both runs go through the same engine, so this checks the rewrite and not the evaluator — which is the right target, since the rewrite is ours and the evaluator is not.
+
+**Superseded in part by §0's corrected narrow cut (2026-07-31).**
+The magic-set transformation described above is no longer needed for the eight ref-glob-backed EDB predicates (`member`, `revoked`, `claim`, `kind`, `target`, `signer`, `verdict`, `anchor`) or for a rule built only from them — their footprint is read whole, so there is no demand to make explicit.
+It is still needed, in a scope reduced to exactly the predicates that require it: the five required-bound EDB predicates (`commit`, `parent`, `tree_entry`, `author`, `line`) and the required-bound builtins (`cand/5`, and through it `bind/5`).
+`reach(+Rev, -C)`, this section's own running example, is the case that still needs the rewrite — `parent/2` is content-addressed and required-bound (`registry.rs`'s `validate` refuses any all-free mode for it), so a bottom-up engine handed `reach` still computes it the unaffordable way absent the narrowing this section specifies.
+`rewrite.rs`, `demand.rs`, `mode.rs`, and `pass8_modes.rs` are therefore not cut; §0 has the corrected scope, and their eventual rewrite is smaller, not their deletion.
 
 ### 2.11 Nemo is the engine, and it is the only one
 
