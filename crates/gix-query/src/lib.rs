@@ -405,6 +405,49 @@ pub fn run_goal_cached(
     })
 }
 
+/// [`run_goal_with`], answered from `cache` on the terms
+/// [`run_goal_cached`] describes.
+///
+/// This is the cached corner of the consumer seam, which
+/// [`run_goal_cached`] alone cannot reach: it takes no `registry` and no
+/// `facts`, so a consumer contributing its own base facts had to choose
+/// between the seam and the cache. The key covers `registry`'s EDB
+/// declarations ([`Registry::edb_digest_input`]) as well as its builtins, so
+/// entries computed under one consumer's registry are never served to
+/// another's.
+///
+/// Soundness rests on the same claim [`PredicateEntry::edb`] already asks a
+/// consumer to make: that a contributed predicate's [`Backing`] tells the
+/// truth about where its facts come from. A `Backing::RefGlob` predicate is
+/// keyed through the footprint ref snapshot like any host predicate; a
+/// `Backing::AdHoc` one is refused a key and simply runs uncached. A
+/// `FactSource` that answers from something its registry entry does not
+/// declare -- a network call, a mutable process-local table -- is outside
+/// that contract and must not be cached through this function.
+///
+/// # Errors
+/// See [`QueryError`].
+pub fn run_goal_with_cached<F: FactSource>(
+    repo: &gix::Repository,
+    registry: &Registry,
+    facts: &F,
+    goal_text: &str,
+    select: &[&str],
+    cache: &QueryCache,
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program_with(repo, registry)?;
+
+    let mut goal = gix_query_parse::parse_goal_with_select(goal_text, select)
+        .map_err(|e| QueryError::Parse(join(&e)))?;
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    let repo_facts = RepoFacts::new(repo);
+    let combined = Layered::new(facts, &repo_facts);
+    cache.get_or_run(repo, &checked, &goal, || {
+        run_checked_goal(repo, &combined, &checked, &goal)
+    })
+}
+
 /// Run a rule-language body to a demand fixpoint against `repo`, selecting
 /// every variable that occurs in it, in first-occurrence order -- the same
 /// default [`gix_query_parse::parse_goal`] gives tier 1's desugaring.
@@ -566,6 +609,51 @@ pub fn run_predicate_with<F: FactSource>(
     let repo_facts = RepoFacts::new(repo);
     let combined = Layered::new(facts, &repo_facts);
     run_checked_goal(repo, &combined, &checked, &goal)
+}
+
+/// [`run_predicate_with`], answered from `cache` on the terms
+/// [`run_goal_with_cached`] describes -- tier 1's half of the cached
+/// consumer seam.
+///
+/// # Errors
+/// See [`QueryError`]. [`QueryError::UnknownPredicate`] and
+/// [`QueryError::BindOutOfRange`] are tier 1's own; the rest are shared with
+/// [`run_goal_with_cached`].
+pub fn run_predicate_with_cached<F: FactSource>(
+    repo: &gix::Repository,
+    registry: &Registry,
+    facts: &F,
+    predicate: &str,
+    bound: &[(usize, Value)],
+    cache: &QueryCache,
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program_with(repo, registry)?;
+
+    let key = checked
+        .registry()
+        .predicates()
+        .find(|entry| entry.key.name.as_ref() == predicate)
+        .map(|entry| entry.key.clone())
+        .ok_or_else(|| QueryError::UnknownPredicate(predicate.to_owned()))?;
+
+    for (position, _) in bound {
+        if *position >= key.arity {
+            return Err(QueryError::BindOutOfRange {
+                predicate: predicate.to_owned(),
+                position: *position,
+                arity: key.arity,
+            });
+        }
+    }
+
+    let mut goal = gix_query_parse::goal_from_predicate(key.name.clone(), key.arity, bound);
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    let repo_facts = RepoFacts::new(repo);
+    let combined = Layered::new(facts, &repo_facts);
+    cache.get_or_run(repo, &checked, &goal, || {
+        run_checked_goal(repo, &combined, &checked, &goal)
+    })
 }
 
 /// Shared tail of tiers 1 and 3: validate a resolved [`gix_query_ir::Goal`]

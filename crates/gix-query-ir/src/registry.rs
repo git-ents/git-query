@@ -289,6 +289,23 @@ impl PredicateEntry {
         })
     }
 
+    /// Whether any of this predicate's facts come from an ad-hoc source
+    /// rather than from refs or from the call's own bound oid.
+    ///
+    /// [`Backing::AdHoc`] is the one backing whose content nothing in a
+    /// repository's state accounts for, so a cache key computed from refs
+    /// alone cannot speak for it. A caller keying on ref state must treat a
+    /// predicate answering `true` here as uncacheable.
+    #[must_use]
+    pub fn is_ad_hoc(&self) -> bool {
+        match &self.class {
+            PredicateClass::Edb { backing, .. } => {
+                backing.iter().any(|b| matches!(b, Backing::AdHoc))
+            }
+            PredicateClass::Idb { .. } => false,
+        }
+    }
+
     /// The arguments every caller must bind.
     ///
     /// For a derived predicate this is `None` until mode inference has run.
@@ -543,6 +560,52 @@ impl Registry {
     /// Every builtin, in key order.
     pub fn builtins(&self) -> impl Iterator<Item = &BuiltinEntry> {
         self.builtins.values()
+    }
+
+    /// A stable digest input covering every EDB predicate's name, signature,
+    /// required-bound set, and backing.
+    ///
+    /// The companion to [`Self::builtin_digest_input`] for the half of the
+    /// registry a consumer can extend: two registries that agree on every
+    /// builtin may still declare entirely different base facts under the same
+    /// names -- `Registry::host()` versus one a consumer has added its own
+    /// [`PredicateEntry::edb`] entries to, or two consumers' registries in one
+    /// process. Without this in the cache key, a [`crate::CheckedProgram`]
+    /// built from one of them would answer for a goal keyed under the other.
+    #[must_use]
+    pub fn edb_digest_input(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for p in self.predicates.values() {
+            let PredicateClass::Edb {
+                required_bound,
+                backing,
+            } = &p.class
+            else {
+                continue;
+            };
+            crate::canonical::push_delimited(&mut out, p.key.name.as_bytes());
+            crate::canonical::push_delimited(&mut out, p.key.arity.to_string().as_bytes());
+            let bound: String = (0..p.key.arity)
+                .map(|i| if required_bound.contains(i) { '1' } else { '0' })
+                .collect();
+            crate::canonical::push_delimited(&mut out, bound.as_bytes());
+            for t in &p.types {
+                let s = match t {
+                    TypeSlot::Known(v) => v.as_str().to_owned(),
+                    TypeSlot::Infer => "?".to_owned(),
+                };
+                crate::canonical::push_delimited(&mut out, s.as_bytes());
+            }
+            for b in backing {
+                let s = match b {
+                    Backing::RefGlob(g) => format!("ref:{g}"),
+                    Backing::ContentAddressed => "content".to_owned(),
+                    Backing::AdHoc => "adhoc".to_owned(),
+                };
+                crate::canonical::push_delimited(&mut out, s.as_bytes());
+            }
+        }
+        out
     }
 
     /// A stable digest input covering every builtin's name, signature, modes,

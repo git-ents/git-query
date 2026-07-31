@@ -32,10 +32,19 @@
 //!   own footprint's ref globs ([`gix_query_check::footprint_of_body`]),
 //!   narrower than the rules snapshot in the common case: a goal touching
 //!   only content-addressed predicates resolves no globs at all.
-//! - **edb digest** -- [`gix_query_ir::Registry::builtin_digest_input`]. No
-//!   ad-hoc (`--edb name=file`) source is wired into this facade yet
-//!   (`Backing::AdHoc` exists in the registry but nothing here constructs
-//!   one); when one is, its digest belongs here too.
+//! - **edb digest** -- [`gix_query_ir::Registry::builtin_digest_input`] and
+//!   [`gix_query_ir::Registry::edb_digest_input`]. The second matters once a
+//!   consumer contributes its own base facts through
+//!   [`crate::run_goal_with_cached`]: two registries agreeing on every
+//!   builtin may still declare different EDB relations under the same names,
+//!   and the answer to a goal over `refs/forge/issue/*` must not be served to
+//!   a registry that never declared it.
+//!
+//! A goal whose footprint reaches a `Backing::AdHoc` predicate is refused a
+//! key outright ([`CacheError::AdHocBacking`]) rather than keyed on refs that
+//! do not account for it -- ad-hoc facts (`--edb name=file`) are not repo
+//! state, so no ref snapshot can speak for them. Refusal means running
+//! uncached, which is always correct.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -58,6 +67,10 @@ pub enum CacheError {
     /// Reading the ref namespace a glob names failed.
     #[error("reading refs for the cache key failed: {0}")]
     Refs(String),
+    /// The goal reaches a predicate backed by an ad-hoc source, which no ref
+    /// snapshot accounts for.
+    #[error("predicate `{0}` is backed by an ad-hoc source and cannot be keyed on ref state")]
+    AdHocBacking(String),
 }
 
 /// The cache key, per this module's doc. Opaque outside this module: nothing
@@ -125,17 +138,26 @@ fn compute_cache_key(
     goal: &Goal,
 ) -> Result<CacheKey, CacheError> {
     let footprint = gix_query_check::footprint_of_body(&goal.body, checked);
+
+    for entry in checked.registry().predicates() {
+        if footprint.base.contains(&entry.key) && entry.is_ad_hoc() {
+            return Err(CacheError::AdHocBacking(entry.key.name.to_string()));
+        }
+    }
+
     let footprint_globs: Vec<String> = footprint.ref_globs.into_iter().collect();
 
     let rules_snapshot = ref_snapshot_digest(repo, &[RULES_GLOB.to_owned()])?;
     let footprint_snapshot = ref_snapshot_digest(repo, &footprint_globs)?;
     let goal_bytes = gix_query_ir::Canonicalizer::goal(goal);
-    let edb_digest = checked.registry().builtin_digest_input();
+    let builtin_digest = checked.registry().builtin_digest_input();
+    let edb_digest = checked.registry().edb_digest_input();
 
     let mut h = Sha256::new();
     push_field(&mut h, &rules_snapshot);
     push_field(&mut h, &goal_bytes);
     push_field(&mut h, &footprint_snapshot);
+    push_field(&mut h, &builtin_digest);
     push_field(&mut h, &edb_digest);
     Ok(CacheKey(h.finalize().into()))
 }
