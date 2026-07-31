@@ -15,9 +15,11 @@
 //!   no-value-invention pass is worth having precisely because it is a
 //!   syntactic check with no carve-outs, and a `Compound` variant here would
 //!   be the carve-out.
-//! - **Mode *sets* for host predicates, one inferred set for derived ones.**
-//!   See [`ModeSet`]. `member/1` is legitimately called both free and bound, so
-//!   a single mode vector cannot describe it.
+//! - **One required-bound [`ArgSet`] per predicate, host or derived.**
+//!   `DEVPLAN.md` §0's narrow cut made this exact: eager preload, not a second
+//!   legal mode vector, is what makes `member/1` callable both free and
+//!   bound, so an EDB predicate's declared mode collapses to the one thing
+//!   that still varies -- which positions a caller must supply.
 //! - **Backing sources beside signatures.** See [`Backing`]. This is what turns
 //!   the footprint pass from a list of predicate names into a list of ref
 //!   globs, which is what makes the cache key sound -- and it is registry
@@ -49,7 +51,7 @@ pub use effect::{EffectDecl, Namespace};
 pub use error::Error;
 pub use host::{Bindings, Builtin, Comparisons, Fact, FactSource, Facts, HostError};
 pub use literal::{Atom, Compare, CompareOp, Literal, PredicateKey};
-pub use mode::{Adornment, ArgSet, GoalAdornments, Mode, ModeSet, ModeVector, RuleAdornments};
+pub use mode::{Adornment, ArgSet, GoalAdornments, Mode, ModeVector, RuleAdornments};
 pub use registry::{
     ArgType, Backing, BuiltinEntry, BuiltinProps, PredicateClass, PredicateEntry, Registry,
     TypeSlot, ValueType, Visibility, builtins, host_predicates,

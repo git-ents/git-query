@@ -859,8 +859,8 @@ fn a_call_site_that_binds_more_than_required_still_derives() {
     // own required-bound set as `{0}` (only `X`), since `Y` arrives as
     // `q8`'s output. `caller8(A, B) :- other8(A, B), p8(A, B)` calls `p8`
     // with *both* arguments already bound, from `other8` -- strictly more
-    // than `p8` requires, which mode discipline explicitly allows
-    // (`ModeVector::satisfied_by` treats binding more than required as
+    // than `p8` requires, which mode discipline explicitly allows (a call
+    // site binding more than a predicate's declared required-bound set is
     // always fine).
     //
     // This is a regression test for a defect `gix-query-check`'s pass 8 used
@@ -885,10 +885,7 @@ fn a_call_site_that_binds_more_than_required_still_derives() {
             types: vec![gix_query_ir::TypeSlot::Infer; 2],
             visibility: Visibility::Public,
             class: gix_query_ir::PredicateClass::Edb {
-                modes: gix_query_ir::ModeSet::new([gix_query_ir::ModeVector::new(vec![
-                    gix_query_ir::Mode::Bound,
-                    gix_query_ir::Mode::Free,
-                ])]),
+                required_bound: gix_query_ir::ArgSet::from_indices([0]),
                 backing: vec![gix_query_ir::Backing::AdHoc],
             },
             doc: std::borrow::Cow::Borrowed(""),

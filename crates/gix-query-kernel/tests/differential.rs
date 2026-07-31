@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use gix_query_check::{check, check_goal};
 use gix_query_eval::{NemoProgram, rewrite_program, run_eager};
 use gix_query_ir::{
-    Backing, Bindings, Export, Fact, FactSource, HostError, ModeSet, PredicateClass,
-    PredicateEntry, PredicateKey, Program, Registry, Span, TypeSlot, Value, ValueType, Visibility,
+    ArgSet, Backing, Bindings, Export, Fact, FactSource, HostError, PredicateClass, PredicateEntry,
+    PredicateKey, Program, Registry, Span, TypeSlot, Value, ValueType, Visibility,
 };
 use gix_query_kernel::{DENIALS, Facts, KERNEL_RULES, kernel_predicates, violations};
 use gix_query_parse::{parse_goal_with_select, parse_module, resolve_goal, resolve_module};
@@ -33,7 +33,7 @@ fn kernel_registry() -> Registry {
             types: vec![TypeSlot::Known(ValueType::Symbol); arity],
             visibility: Visibility::Public,
             class: PredicateClass::Edb {
-                modes: ModeSet::enumerable(arity),
+                required_bound: ArgSet::empty(),
                 backing: vec![Backing::AdHoc],
             },
             doc: Cow::Borrowed(""),

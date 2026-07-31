@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::fmt;
 
 /// Whether an argument must be bound at call time.
@@ -96,70 +95,6 @@ impl fmt::Display for ModeVector {
             f.write_str(m.as_str())?;
         }
         Ok(())
-    }
-}
-
-/// The set of mode vectors an EDB predicate supports.
-///
-/// EDB predicates carry a *set*, not a vector, and this is load-bearing rather
-/// than generality for its own sake. `member/1` is legitimately called free --
-/// enumerate the member namespace -- and bound -- test one member. Both are
-/// affordable, so both must be legal, and a single vector cannot say that.
-///
-/// IDB predicates are the other case: their modes are inferred rather than
-/// declared, and they carry a single required-bound [`ArgSet`] unioned over
-/// their rules.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ModeSet(BTreeSet<ModeVector>);
-
-impl ModeSet {
-    /// A mode set containing exactly `vectors`.
-    #[must_use]
-    pub fn new(vectors: impl IntoIterator<Item = ModeVector>) -> Self {
-        Self(vectors.into_iter().collect())
-    }
-
-    /// The set containing only the all-free vector: fully enumerable.
-    #[must_use]
-    pub fn enumerable(arity: usize) -> Self {
-        Self::new([ModeVector::all_free(arity)])
-    }
-
-    /// The supported vectors.
-    pub fn vectors(&self) -> impl Iterator<Item = &ModeVector> {
-        self.0.iter()
-    }
-
-    /// Whether the set is empty, which would make the predicate uncallable.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// The vector to use for a call whose bound arguments are `bound`, or
-    /// `None` when no supported vector is satisfied.
-    ///
-    /// When several are satisfied the most-bound one wins, since it is the
-    /// cheapest: a provider given more keys does less work.
-    #[must_use]
-    pub fn select(&self, bound: &ArgSet) -> Option<&ModeVector> {
-        self.0
-            .iter()
-            .filter(|v| v.satisfied_by(bound))
-            .max_by_key(|v| v.required_bound().len())
-    }
-
-    /// The arguments *every* supported vector requires bound -- what a caller
-    /// must supply no matter which vector is chosen.
-    #[must_use]
-    pub fn always_required(&self) -> ArgSet {
-        let mut it = self.0.iter();
-        let Some(first) = it.next() else {
-            return ArgSet::empty();
-        };
-        it.fold(first.required_bound(), |acc, v| {
-            acc.intersection(&v.required_bound())
-        })
     }
 }
 
@@ -351,21 +286,6 @@ mod tests {
         assert!(v.satisfied_by(&ArgSet::from_indices([0, 1])));
         assert!(v.satisfied_by(&ArgSet::from_indices([0])));
         assert!(!v.satisfied_by(&ArgSet::from_indices([1])));
-    }
-
-    #[test]
-    fn mode_set_prefers_the_most_bound_satisfied_vector() {
-        let set = ModeSet::new([ModeVector::all_free(1), ModeVector::all_bound(1)]);
-        let chosen = set.select(&ArgSet::from_indices([0])).expect("satisfied");
-        assert_eq!(chosen, &ModeVector::all_bound(1));
-        let chosen = set.select(&ArgSet::empty()).expect("satisfied");
-        assert_eq!(chosen, &ModeVector::all_free(1));
-    }
-
-    #[test]
-    fn a_predicate_callable_both_ways_requires_nothing_always() {
-        let set = ModeSet::new([ModeVector::all_free(1), ModeVector::all_bound(1)]);
-        assert!(set.always_required().is_empty());
     }
 
     #[test]

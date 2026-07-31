@@ -137,19 +137,15 @@ mod tests {
         verdict: String,
     }
 
-    /// The mode vector requiring the fewest bound arguments among those the
-    /// entry's `Edb` mode set supports -- the cheapest legal call, and the
-    /// one every predicate must answer for regardless of which richer
-    /// vectors it also supports.
+    /// The cheapest legal call this entry accepts -- its declared
+    /// required-bound set, with every other position free (binding more than
+    /// required is always legal on top, but never necessary to answer for
+    /// the predicate at all).
     fn least_bound_vector(entry: &gix_query_ir::PredicateEntry) -> gix_query_ir::ModeVector {
-        let PredicateClass::Edb { modes, .. } = &entry.class else {
+        let PredicateClass::Edb { required_bound, .. } = &entry.class else {
             panic!("{} is not an EDB predicate", entry.key);
         };
-        modes
-            .vectors()
-            .min_by_key(|v| v.required_bound().len())
-            .cloned()
-            .unwrap_or_else(|| panic!("{}'s mode set is empty", entry.key))
+        required_bound.to_mode_vector(entry.key.arity)
     }
 
     /// Every EDB predicate the registry declares has a provider here, and

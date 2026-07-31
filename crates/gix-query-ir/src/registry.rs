@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::{ArgSet, CompareOp, Error, Mode, ModeSet, ModeVector, PredicateKey};
+use crate::{ArgSet, CompareOp, Error, Mode, ModeVector, PredicateKey};
 
 /// A column type. Values are identifiers, never content.
 ///
@@ -187,10 +187,14 @@ pub enum Backing {
 /// How a predicate is implemented.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PredicateClass {
-    /// Host-supplied and repo-backed. Carries a mode *set*, not a vector.
+    /// Host-supplied and repo-backed.
     Edb {
-        /// The mode vectors this predicate's provider supports.
-        modes: ModeSet,
+        /// The arguments a caller must bind. Empty means the provider's
+        /// whole extension can be read in one go (`DEVPLAN.md` §0) --
+        /// binding more than this is always legal on top, so this one
+        /// [`ArgSet`] is enough to describe every call this predicate
+        /// accepts, not just the cheapest one.
+        required_bound: ArgSet,
         /// What the provider reads. A predicate may read more than one
         /// namespace.
         backing: Vec<Backing>,
@@ -258,32 +262,30 @@ impl PredicateEntry {
         })
     }
 
-    /// The arguments every caller must bind, whichever mode vector is chosen.
+    /// The arguments every caller must bind.
     ///
     /// For a derived predicate this is `None` until mode inference has run.
     #[must_use]
     pub fn always_required_bound(&self) -> Option<ArgSet> {
         match &self.class {
-            PredicateClass::Edb { modes, .. } => Some(modes.always_required()),
+            PredicateClass::Edb { required_bound, .. } => Some(*required_bound),
             PredicateClass::Idb { required_bound } => *required_bound,
         }
     }
 
     /// Whether this predicate's whole extension can be read in one go: an EDB
-    /// predicate with an all-free mode vector.
+    /// predicate with no required-bound arguments.
     ///
     /// `DEVPLAN.md` §0's eager path may only preload a predicate whose
     /// registry entry says so -- a required-bound EDB predicate such as
-    /// `commit/1` or `parent/2` has no all-free vector, precisely because
+    /// `commit/1` or `parent/2` cannot be called all-free, precisely because
     /// enumerating it whole is the unaffordable materialization mode
     /// discipline exists to prevent. An IDB predicate is never enumerable by
     /// this definition; it is derived, not read.
     #[must_use]
     pub fn is_enumerable(&self) -> bool {
         match &self.class {
-            PredicateClass::Edb { modes, .. } => {
-                modes.vectors().any(|v| v.required_bound().is_empty())
-            }
+            PredicateClass::Edb { required_bound, .. } => required_bound.is_empty(),
             PredicateClass::Idb { .. } => false,
         }
     }
@@ -457,13 +459,17 @@ impl Registry {
     /// notice.
     pub fn validate(&self) -> Result<(), Error> {
         for e in self.predicates.values() {
-            let PredicateClass::Edb { modes, backing } = &e.class else {
+            let PredicateClass::Edb {
+                required_bound,
+                backing,
+            } = &e.class
+            else {
                 continue;
             };
             if !backing.contains(&Backing::ContentAddressed) {
                 continue;
             }
-            if modes.vectors().any(|v| v.required_bound().is_empty()) {
+            if required_bound.is_empty() {
                 return Err(Error::EnumerableContentAddressed { key: e.key.clone() });
             }
         }
@@ -544,7 +550,7 @@ impl Registry {
 fn edb(
     name: &'static str,
     types: &[ValueType],
-    modes: ModeSet,
+    required_bound: ArgSet,
     backing: Vec<Backing>,
     doc: &'static str,
 ) -> PredicateEntry {
@@ -552,7 +558,10 @@ fn edb(
         key: PredicateKey::new(name, types.len()),
         types: types.iter().copied().map(TypeSlot::Known).collect(),
         visibility: Visibility::Public,
-        class: PredicateClass::Edb { modes, backing },
+        class: PredicateClass::Edb {
+            required_bound,
+            backing,
+        },
         doc: Cow::Borrowed(doc),
     }
 }
@@ -565,21 +574,17 @@ fn edb(
 #[must_use]
 pub fn host_predicates() -> Vec<PredicateEntry> {
     use Backing::{ContentAddressed, RefGlob};
-    use Mode::{Bound, Free};
     use ValueType::{Int, Member, Oid, Path, Rev, Symbol};
 
-    // Enumerate the namespace, or test one identity. Both affordable, so both
-    // legal -- which is the whole reason an EDB predicate carries a mode set.
-    let enumerable_or_test1 = ModeSet::new([ModeVector::all_free(1), ModeVector::all_bound(1)]);
-    // The same for a two-place relation over an enumerable namespace: read it
-    // whole, index by its subject, or test one pair.
-    let enumerable_or_test2 = ModeSet::new([
-        ModeVector::all_free(2),
-        ModeVector::new(vec![Bound, Free]),
-        ModeVector::all_bound(2),
-    ]);
-    // Content-addressed, so never enumerable: the subject must be bound.
-    let keyed2 = ModeSet::new([ModeVector::new(vec![Bound, Free]), ModeVector::all_bound(2)]);
+    // Enumerable: reading the whole namespace is affordable (`DEVPLAN.md`
+    // §0's eager path), so nothing is required bound -- binding a position
+    // anyway, to test one identity or one pair, is always legal on top of
+    // that (`ModeVector::satisfied_by`'s "binding more than required" rule,
+    // which a single `ArgSet` already expresses without a second vector).
+    let enumerable = ArgSet::empty();
+    // Content-addressed, so never enumerable: the subject (position 0) must
+    // be bound.
+    let keyed_on_subject = ArgSet::from_indices([0]);
 
     // `gix-attest`'s layout: one ref per target key, claims chained as commits
     // on it. A single star matches, because a target key is one component.
@@ -595,7 +600,7 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
             // and it is also what makes the reference vocabulary's `+Rev`
             // inference work: `reach`, `introduced`, `authored`, and
             // `mergeable` are all `+Rev` *because* this one is.
-            ModeSet::new([ModeVector::all_bound(1)]),
+            keyed_on_subject,
             vec![ContentAddressed],
             "the revision names a commit",
         ),
@@ -603,77 +608,77 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
             "parent",
             &[Rev, Rev],
             // Required-bound on the child, so an ancestry walk is a walk. An
-            // all-free vector here would make `reach` read the entire commit
+            // all-free call here would make `reach` read the entire commit
             // graph and would make its result uncacheable, since nothing
             // content-addressed enters the footprint.
-            keyed2.clone(),
+            keyed_on_subject,
             vec![ContentAddressed],
             "the second commit is a parent of the first",
         ),
         edb(
             "tree_entry",
             &[Rev, Path, Oid],
-            ModeSet::new([
-                ModeVector::new(vec![Bound, Free, Free]),
-                ModeVector::new(vec![Bound, Bound, Free]),
-                ModeVector::all_bound(3),
-            ]),
+            // Required-bound on the revision only -- a call additionally
+            // binding the path is legal on top (a direct single-file lookup
+            // rather than a whole-tree walk), which required-bound alone
+            // already permits without a second declared vector.
+            keyed_on_subject,
             vec![ContentAddressed],
             "the revision's tree holds this blob at this path",
         ),
         edb(
             "author",
             &[Rev, Member],
-            keyed2.clone(),
+            keyed_on_subject,
             vec![ContentAddressed],
             "the commit's author",
         ),
         edb(
             "member",
             &[Member],
-            enumerable_or_test1.clone(),
+            enumerable,
             members(),
             "a known member identity",
         ),
         edb(
             "revoked",
             &[Member],
-            enumerable_or_test1.clone(),
+            enumerable,
             members(),
             "the member's identity has been revoked",
         ),
         edb(
             "claim",
             &[Oid],
-            enumerable_or_test1.clone(),
+            enumerable,
             claims(),
             "a signed body attached to an anchor",
         ),
         edb(
             "kind",
             &[Oid, Symbol],
-            enumerable_or_test2.clone(),
+            enumerable,
             claims(),
             "the claim's kind",
         ),
         edb(
             "target",
             &[Oid, Oid],
-            enumerable_or_test2.clone(),
+            enumerable,
             claims(),
             "what the claim is about",
         ),
         edb(
             "signer",
             &[Oid, Member],
-            enumerable_or_test2.clone(),
+            enumerable,
             claims(),
             "who signed the claim",
         ),
         edb(
             "verdict",
             &[Oid, Symbol],
-            enumerable_or_test2,
+            enumerable,
             claims(),
             // Payload vocabulary, not envelope machinery: the column is a
             // field of a `review` payload, read through the schema that
@@ -684,7 +689,7 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
         edb(
             "anchor",
             &[Oid],
-            enumerable_or_test1.clone(),
+            enumerable,
             // One ref per anchor, `refs/anchors/<id>` -- a single component,
             // so a single-star pattern matches every anchor.
             vec![RefGlob("refs/anchors/*".into())],
@@ -697,7 +702,7 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
             // as enumerable and warned in prose never to enumerate it; a
             // footgun documented in prose is a footgun. One registry line
             // turns a repo-sized materialization into a validation error.
-            keyed2,
+            keyed_on_subject,
             vec![ContentAddressed],
             "the blob has a line numbered N, counting from 1",
         ),
@@ -909,7 +914,7 @@ mod tests {
             .expect("parent")
             .clone();
         parent.class = PredicateClass::Edb {
-            modes: ModeSet::enumerable(2),
+            required_bound: ArgSet::empty(),
             backing: vec![Backing::ContentAddressed],
         };
         r.predicates.insert(parent.key.clone(), parent);

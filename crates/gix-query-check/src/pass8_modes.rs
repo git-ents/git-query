@@ -204,15 +204,15 @@ fn body_adornment(lit: &Literal, cb: ArgSet, registry: &Registry) -> ArgSet {
 fn is_edb_positive<'r>(
     lit: &'r Literal,
     registry: &'r Registry,
-) -> Option<(&'r gix_query_ir::PredicateKey, &'r gix_query_ir::ModeSet)> {
+) -> Option<(&'r gix_query_ir::PredicateKey, ArgSet)> {
     let Literal::Positive(a) = lit else {
         return None;
     };
     let entry = registry.predicate(&a.predicate)?;
-    let PredicateClass::Edb { modes, .. } = &entry.class else {
+    let PredicateClass::Edb { required_bound, .. } = &entry.class else {
         return None;
     };
-    Some((&a.predicate, modes))
+    Some((&a.predicate, *required_bound))
 }
 
 /// One silent pass over every rule, growing required-bound sets. Returns
@@ -235,14 +235,14 @@ fn growth_over_rule(rule: &Rule, registry: &mut Registry, changed: &mut bool) {
     let mut bound_vars = head_vars_at(head, &req);
     for lit in &rule.body {
         let cb = call_bound(lit, &bound_vars);
-        let required = if let Some((_, modes)) = is_edb_positive(lit, registry) {
-            // EDB modes are declared, not grown -- but promoting a head
-            // variable that *every* supported vector needs is always a safe
-            // step toward satisfying one of them, which is what makes
-            // `commit(Rev)` inside `reach(Rev, Rev) :- commit(Rev).` promote
-            // `Rev` instead of stalling. The validation sweep re-checks with
-            // the real, exact `ModeSet::select`.
-            modes.always_required()
+        let required = if let Some((_, required_bound)) = is_edb_positive(lit, registry) {
+            // EDB required-bound sets are declared, not grown -- but
+            // promoting a head variable the callee needs is always a safe
+            // step toward satisfying it, which is what makes `commit(Rev)`
+            // inside `reach(Rev, Rev) :- commit(Rev).` promote `Rev` instead
+            // of stalling. The validation sweep re-checks against the same
+            // stable registry.
+            required_bound
         } else {
             fixed_or_idb_required(lit, registry)
         };
@@ -327,8 +327,11 @@ fn check_literal_mode(
     site: Site,
     errors: &mut Errors,
 ) {
-    if let Some((key, modes)) = is_edb_positive(lit, registry) {
-        if modes.select(&cb).is_none() {
+    if let Some((key, required_bound)) = is_edb_positive(lit, registry) {
+        // Binding more than required is always legal on top of the one
+        // declared required-bound set (`DEVPLAN.md` §0 collapsed what used
+        // to be a chosen mode vector to this single subset check).
+        if !required_bound.is_subset(&cb) {
             let Literal::Positive(atom) = lit else {
                 unreachable!("is_edb_positive only matches Positive")
             };

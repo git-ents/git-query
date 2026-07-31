@@ -11,8 +11,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use gix_query_ir::{
-    Backing, Bindings, Builtin, Fact, FactSource, Facts, HostError, Mode, ModeSet, ModeVector,
-    PredicateClass, PredicateEntry, PredicateKey, Registry, TypeSlot, Value, Visibility,
+    ArgSet, Backing, Bindings, Builtin, Fact, FactSource, Facts, HostError, PredicateClass,
+    PredicateEntry, PredicateKey, Registry, TypeSlot, Value, Visibility,
 };
 
 /// Register `name/arity` as a fully-enumerable host predicate.
@@ -22,18 +22,7 @@ use gix_query_ir::{
 /// as defined by rules in the program, and a program with no rule for it
 /// never asks anyone for its facts.
 pub(crate) fn edb_enumerable(registry: &mut Registry, name: &str, arity: usize) {
-    registry
-        .insert_predicate(PredicateEntry {
-            key: PredicateKey::new(name, arity),
-            types: vec![TypeSlot::Infer; arity],
-            visibility: Visibility::Public,
-            class: PredicateClass::Edb {
-                modes: ModeSet::enumerable(arity),
-                backing: vec![Backing::AdHoc],
-            },
-            doc: std::borrow::Cow::Borrowed(""),
-        })
-        .expect("insertable");
+    edb(registry, name, arity, ArgSet::empty());
 }
 
 /// Register `name/arity` as a required-bound host predicate -- the five
@@ -46,17 +35,22 @@ pub(crate) fn edb_required_bound(
     arity: usize,
     bound: &[usize],
 ) {
-    let mut modes = vec![Mode::Free; arity];
-    for &pos in bound {
-        modes[pos] = Mode::Bound;
-    }
+    edb(
+        registry,
+        name,
+        arity,
+        ArgSet::from_indices(bound.iter().copied()),
+    );
+}
+
+fn edb(registry: &mut Registry, name: &str, arity: usize, required_bound: ArgSet) {
     registry
         .insert_predicate(PredicateEntry {
             key: PredicateKey::new(name, arity),
             types: vec![TypeSlot::Infer; arity],
             visibility: Visibility::Public,
             class: PredicateClass::Edb {
-                modes: ModeSet::new(vec![ModeVector::new(modes)]),
+                required_bound,
                 backing: vec![Backing::AdHoc],
             },
             doc: std::borrow::Cow::Borrowed(""),
