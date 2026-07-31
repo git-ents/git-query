@@ -457,7 +457,22 @@ fn run_checked_goal_full(
     emitted.audit()?;
 
     let builtins = AllBuiltins::new(repo);
-    let result = gix_query_eval::run_to_fixpoint(&rewritten, &emitted, facts, &builtins, 64)?;
+    // Eager, not demand (`DEVPLAN.md` §0, step 4): every ref-glob EDB
+    // predicate the goal touches is preloaded whole; `commit`, `parent`,
+    // `tree_entry`, `author`, and `line` still go through the same
+    // one-bound-call-at-a-time loop underneath, since none of them can be
+    // enumerated cold. `gix_query_eval::run_to_fixpoint` is unused here but
+    // stays exported and under test -- the differential proptest in
+    // `gix-query-eval/tests/eager_vs_demand.rs` is the reason this switch
+    // was safe to make.
+    let result = gix_query_eval::run_eager(
+        &rewritten,
+        &emitted,
+        checked.registry(),
+        facts,
+        &builtins,
+        64,
+    )?;
 
     Ok((rewritten, emitted, result))
 }
