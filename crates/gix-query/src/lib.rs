@@ -20,6 +20,9 @@ use std::sync::Arc;
 use gix_query_host::{AllBuiltins, RepoFacts};
 use gix_query_ir::{CheckedProgram, Registry};
 
+mod cache;
+
+pub use cache::{CacheError, QueryCache};
 pub use gix_query_eval::{DerivationTree, NegationWitness};
 pub use gix_query_ir::{EffectDecl, Footprint, Namespace, Registry as HostRegistry, Value};
 pub use gix_query_rules::RuleStore;
@@ -315,6 +318,36 @@ pub fn run_goal(
     run_checked_goal(repo, &facts, &checked, &goal)
 }
 
+/// [`run_goal`], answered from `cache` when `goal_text`'s cache key
+/// (`DEVPLAN.md` §1.1 -- rules snapshot, canonical goal, footprint ref
+/// snapshot, edb digest) is already present, and stored there on a miss.
+///
+/// This is the opt-in half of the feature: calling this function at all is
+/// the flag. Nothing about [`run_goal`] changes, and nothing here can return
+/// a stale answer for a query this function did not itself decide to serve
+/// from `cache` -- a cache-key computation failure falls back to running
+/// uncached rather than guessing at a key ([`QueryCache::get_or_run`]).
+///
+/// # Errors
+/// See [`QueryError`].
+pub fn run_goal_cached(
+    repo: &gix::Repository,
+    goal_text: &str,
+    select: &[&str],
+    cache: &QueryCache,
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program(repo)?;
+
+    let mut goal = gix_query_parse::parse_goal_with_select(goal_text, select)
+        .map_err(|e| QueryError::Parse(join(&e)))?;
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    let facts = RepoFacts::new(repo);
+    cache.get_or_run(repo, &checked, &goal, || {
+        run_checked_goal(repo, &facts, &checked, &goal)
+    })
+}
+
 /// Run a rule-language body to a demand fixpoint against `repo`, selecting
 /// every variable that occurs in it, in first-occurrence order -- the same
 /// default [`gix_query_parse::parse_goal`] gives tier 1's desugaring.
@@ -338,6 +371,28 @@ pub fn run_body(repo: &gix::Repository, body_source: &str) -> Result<Vec<Vec<Val
 
     let facts = RepoFacts::new(repo);
     run_checked_goal(repo, &facts, &checked, &goal)
+}
+
+/// [`run_body`], answered from `cache`, on the same terms as
+/// [`run_goal_cached`].
+///
+/// # Errors
+/// See [`QueryError`].
+pub fn run_body_cached(
+    repo: &gix::Repository,
+    body_source: &str,
+    cache: &QueryCache,
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program(repo)?;
+
+    let mut goal =
+        gix_query_parse::parse_goal(body_source).map_err(|e| QueryError::Parse(join(&e)))?;
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    let facts = RepoFacts::new(repo);
+    cache.get_or_run(repo, &checked, &goal, || {
+        run_checked_goal(repo, &facts, &checked, &goal)
+    })
 }
 
 /// [`run_body`], but evaluating `body_source` against `repo` as it would

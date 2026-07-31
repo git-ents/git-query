@@ -1870,6 +1870,7 @@ dependencies = [
  "gix-query-rules",
  "gix-refstore",
  "rstest",
+ "sha2",
  "tempfile",
  "test-support",
  "thiserror",
