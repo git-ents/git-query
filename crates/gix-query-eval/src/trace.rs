@@ -221,7 +221,7 @@ fn term_value(term: &nemo::rule_model::components::term::Term) -> Result<Value, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::demand::run_to_fixpoint;
+    use crate::eager::run_eager;
     use crate::lower::NemoProgram;
     use crate::rewrite::rewrite;
     use crate::testutil::StubTable;
@@ -288,8 +288,7 @@ mod tests {
             .with(PredicateKey::new("member", 1), vec![vec![sym("alice")]])
             .with(PredicateKey::new("revoked", 1), vec![vec![sym("alice")]]);
         let builtins = StubTable::new();
-        let result =
-            run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
 
         let tree = explain(
             &emitted,
@@ -368,8 +367,7 @@ mod tests {
             vec![vec![sym("c"), sym("b")], vec![sym("b"), sym("a")]],
         );
         let builtins = StubTable::new();
-        let result =
-            run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
 
         let tree = explain(
             &emitted,
@@ -447,8 +445,7 @@ mod tests {
             )
             .with(PredicateKey::new("revoked", 1), vec![vec![sym("bob")]]);
         let builtins = StubTable::new();
-        let result =
-            run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
 
         let tree = explain(
             &emitted,
@@ -507,8 +504,7 @@ mod tests {
 
         let facts = StubTable::new().with(PredicateKey::new("member", 1), vec![vec![sym("alice")]]);
         let builtins = StubTable::new();
-        let result =
-            run_to_fixpoint(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
 
         let tree = explain(
             &emitted,

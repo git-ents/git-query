@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use gix_query_check::{check, check_goal};
-use gix_query_eval::{NemoProgram, rewrite_program, run_to_fixpoint};
+use gix_query_eval::{NemoProgram, rewrite_program, run_eager};
 use gix_query_ir::{
     Backing, Bindings, Export, Fact, FactSource, HostError, ModeSet, PredicateClass,
     PredicateEntry, PredicateKey, Program, Registry, Span, TypeSlot, Value, ValueType, Visibility,
@@ -232,7 +232,7 @@ fn interpreted_violations(
             let rewritten = rewrite_program(checked, &goal);
             let emitted = NemoProgram::emit(&rewritten).expect("emits");
             emitted.audit().expect("audit passes");
-            let result = run_to_fixpoint(&rewritten, &emitted, &tables, &builtins, 32)
+            let result = run_eager(&rewritten, &emitted, &tables, &builtins, 32)
                 .expect("kernel rules converge");
 
             let mut rows: Vec<Vec<String>> = result

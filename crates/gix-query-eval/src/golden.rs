@@ -19,7 +19,7 @@ use gix_query_ir::{
 
 use crate::rewrite::{LoweredProgram, rewrite};
 use crate::testutil::{StubTable, edb_enumerable};
-use crate::{NemoProgram, run_to_fixpoint};
+use crate::{NemoProgram, run_eager};
 
 fn pos(name: &str, vars: &[&str]) -> Literal {
     Literal::Positive(Atom::new(
@@ -78,7 +78,7 @@ fn relation(checked: &CheckedProgram, goal: &Goal, facts: &StubTable) -> Vec<Vec
     let emitted = NemoProgram::emit(&rewritten).expect("emits");
     emitted.audit().expect("audit passes");
     let builtins = StubTable::new();
-    let mut out = run_to_fixpoint(&rewritten, &emitted, facts, &builtins, 16)
+    let mut out = run_eager(&rewritten, &emitted, facts, &builtins, 16)
         .expect("converges")
         .answer;
     out.sort();
@@ -822,7 +822,7 @@ fn rewritten_and_unrewritten_agree_on_the_demanded_subset() {
     let emitted = NemoProgram::emit(&rewritten_program).expect("emits");
     emitted.audit().expect("audit passes");
     let builtins = StubTable::new();
-    let mut rewritten_answer = run_to_fixpoint(&rewritten_program, &emitted, &facts, &builtins, 16)
+    let mut rewritten_answer = run_eager(&rewritten_program, &emitted, &facts, &builtins, 16)
         .expect("converges")
         .answer;
     rewritten_answer.sort();
@@ -835,7 +835,7 @@ fn rewritten_and_unrewritten_agree_on_the_demanded_subset() {
         ),
     );
     let plain_emitted = NemoProgram::emit(&plain).expect("emits");
-    let plain_all = run_to_fixpoint(&plain, &plain_emitted, &facts, &builtins, 16)
+    let plain_all = run_eager(&plain, &plain_emitted, &facts, &builtins, 16)
         .expect("converges")
         .answer;
     let mut plain_restricted: Vec<Value> = plain_all

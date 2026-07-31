@@ -1,34 +1,107 @@
-//! Eager evaluation for the ref-glob EDB (`DEVPLAN.md` §0).
+//! The evaluator: eager preload for the ref-glob EDB, demand for everything
+//! else (`DEVPLAN.md` §0).
 //!
-//! Every enumerable base predicate the rewrite touches -- called free or
-//! demanded bound, it makes no difference, since its whole extension is
-//! affordable to read -- is loaded once before the first round and never
-//! asked through the demand loop again. A required-bound EDB predicate or a
-//! builtin still cannot be enumerated cold (`commit`, `parent`,
-//! `tree_entry`, `author`, `line`, and every builtin), so those keep going
-//! through [`crate::demand`]'s one-bound-call-at-a-time loop underneath this
-//! one. This is the "narrow cut" §0 landed on after the general demand loop
-//! turned out to still be load-bearing for those five predicates.
+//! Nemo is bottom-up; a [`FactSource`] and a [`Builtin`] only answer bound
+//! calls, and neither meets Nemo's own evaluation halfway on its own. This
+//! module bridges the gap in two parts, run in sequence:
+//!
+//! - **Eager.** Every enumerable base predicate [`LoweredProgram::eager`]
+//!   names -- called free or bound, it makes no difference, since its whole
+//!   extension is affordable to read -- is loaded once before the first
+//!   round and never asked about again.
+//! - **Demand.** A required-bound EDB predicate (`commit`, `parent`,
+//!   `tree_entry`, `author`, `line`) or a builtin still cannot be enumerated
+//!   cold, so [`LoweredProgram::demand`]'s sites for those go through a
+//!   one-bound-call-at-a-time loop: run to a local fixpoint, read the
+//!   `magic_`-prefixed demand relations it produced, answer the ones an IDB
+//!   predicate cannot answer for itself, inject the answers as ordinary
+//!   facts, and run again -- from cold, since Nemo has no incremental entry
+//!   point. The loop stops the first round that asks for nothing it had not
+//!   already answered.
+//!
+//! # The call log is not a debugging aid
+//!
+//! `explain` needs to say which builtin ran in which mode, and the pass-7
+//! footprint audit needs to know a ref-backed predicate was actually read --
+//! neither can be recovered from Nemo's own trace, which records derivations,
+//! not host calls. So every demand call this loop makes is recorded in
+//! [`CallLog`], including the ones that came back empty: a call with no
+//! answers is not a failure, and dropping it from the log would make it
+//! indistinguishable from a call that was never made at all. An eager
+//! preload is not a "call" in this sense -- it is unconditional, not a
+//! response to demand -- so it is never logged.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use gix_query_ir::{Builtin, FactSource, PredicateKey, Registry, Value};
+use gix_query_ir::{Adornment, Builtin, FactSource, PredicateKey, Value};
 
-use crate::demand::{CallLog, LoggedCall, LoopResult, bindings_from_demand};
 use crate::engine;
 use crate::error::EvalError;
 use crate::lower::{NemoProgram, NemoTables};
 use crate::rewrite::{DemandKind, LoweredProgram};
 
-/// Run `rewritten` to a fixpoint, eagerly preloading every enumerable base
-/// predicate it touches instead of demanding it one bound call at a time.
+/// One answered demand call, recorded as it happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoggedCall {
+    /// Which round asked.
+    pub round: usize,
+    /// The predicate as written in source text.
+    pub base: PredicateKey,
+    /// Which side of the seam answered it.
+    pub kind: DemandKind,
+    /// The bound arguments, in the predicate's bound-position order -- the
+    /// same order the demand relation carried them in.
+    pub bound: Vec<Value>,
+    /// How many complete tuples came back. Zero is a valid answer, not an
+    /// error.
+    pub answers: usize,
+}
+
+/// Every demand call the loop made, in the order it made them.
+///
+/// A `Vec` behind an accessor rather than a bare public field: the log is
+/// append-only from this module's point of view, and a consumer should not be
+/// able to reorder or truncate what is, per the module doc, an audit record.
+#[derive(Debug, Clone, Default)]
+pub struct CallLog(Vec<LoggedCall>);
+
+impl CallLog {
+    /// Every call, in the order it was made.
+    #[must_use]
+    pub fn calls(&self) -> &[LoggedCall] {
+        &self.0
+    }
+}
+
+/// What the evaluator produced.
+#[derive(Debug, Clone)]
+pub struct LoopResult {
+    /// How many demand rounds ran, including the last one that confirmed
+    /// convergence. `1` when eager preload alone already answered the goal.
+    pub rounds: usize,
+    /// Every host call the demand loop made along the way.
+    pub log: CallLog,
+    /// The query's answer tuples, in `select` column order, as the final
+    /// round's engine computed them.
+    pub answer: Vec<Vec<Value>>,
+    /// The tables the final, converged round ran against -- what
+    /// [`crate::trace::explain`] re-executes to trace a derivation, since
+    /// tracing needs a completed evaluation and there is no cheaper route to
+    /// one than running the converged state fresh.
+    pub tables: NemoTables,
+}
+
+/// Run `rewritten` to a fixpoint: eager preload first, then demand for
+/// whatever [`LoweredProgram::eager`] does not cover.
 ///
 /// `program` must be [`NemoProgram::emit`]'s output for the very same
-/// `rewritten`, exactly as [`crate::demand::run_to_fixpoint`] requires --
-/// this function drives the identical rewritten program, just with a
-/// different table-loading strategy. `registry` is `rewritten`'s own
-/// [`CheckedProgram`](gix_query_ir::CheckedProgram)'s registry, consulted
-/// only for [`gix_query_ir::PredicateEntry::is_enumerable`].
+/// `rewritten` -- the rewrite decides what is eager and what is demanded (the
+/// only place [`gix_query_ir::PredicateEntry::is_enumerable`] is consulted),
+/// the emitter decides what Nemo actually runs, and this function trusts that
+/// the two agree, which is exactly what the emission audit is for. Run that
+/// audit once, before the first round; this function does not re-run it per
+/// round, since the rule text never changes between rounds, only the tables
+/// do.
 ///
 /// # Errors
 /// [`EvalError::DemandDidNotConverge`] if `max_rounds` is exhausted; anything
@@ -36,7 +109,6 @@ use crate::rewrite::{DemandKind, LoweredProgram};
 pub fn run_eager(
     rewritten: &LoweredProgram,
     program: &NemoProgram,
-    registry: &Registry,
     facts: &dyn FactSource,
     builtins: &dyn Builtin,
     max_rounds: usize,
@@ -45,17 +117,13 @@ pub fn run_eager(
     let mut preloaded: BTreeSet<PredicateKey> = BTreeSet::new();
 
     for key in &rewritten.eager {
-        load_whole(key, facts, &mut tables)?;
+        let all_free = vec![None; key.arity];
+        let rows: Vec<Vec<Value>> = facts
+            .facts(key, &all_free, false)?
+            .map(|f| f.map(|f| f.values))
+            .collect::<Result<_, _>>()?;
+        tables.insert(key.clone(), rows);
         preloaded.insert(key.clone());
-    }
-    for site in &rewritten.demand {
-        if site.kind == DemandKind::Edb
-            && !preloaded.contains(&site.base)
-            && is_enumerable(&site.base, registry)
-        {
-            load_whole(&site.base, facts, &mut tables)?;
-            preloaded.insert(site.base.clone());
-        }
     }
 
     let mut answered: BTreeMap<PredicateKey, BTreeSet<Vec<Value>>> = BTreeMap::new();
@@ -109,7 +177,7 @@ pub fn run_eager(
             }
             return Ok(LoopResult {
                 rounds: round,
-                log: CallLog::from_calls(log),
+                log: CallLog(log),
                 answer,
                 tables,
             });
@@ -119,27 +187,19 @@ pub fn run_eager(
     Err(EvalError::DemandDidNotConverge(max_rounds))
 }
 
-fn is_enumerable(key: &PredicateKey, registry: &Registry) -> bool {
-    registry
-        .predicate(key)
-        .is_some_and(gix_query_ir::PredicateEntry::is_enumerable)
-}
-
-/// Read a predicate's whole extension through `facts` -- the eager
-/// materialization step itself, valid only for a predicate
-/// [`gix_query_ir::PredicateEntry::is_enumerable`] says can be read whole.
-fn load_whole(
-    key: &PredicateKey,
-    facts: &dyn FactSource,
-    tables: &mut NemoTables,
-) -> Result<(), EvalError> {
-    let all_free = vec![None; key.arity];
-    let rows: Vec<Vec<Value>> = facts
-        .facts(key, &all_free, false)?
-        .map(|f| f.map(|f| f.values))
-        .collect::<Result<_, _>>()?;
-    tables.insert(key.clone(), rows);
-    Ok(())
+/// Expand a demand relation's row -- values at the bound positions only, in
+/// ascending position order -- into a full `Bindings` pattern: `Some` at
+/// every bound position, `None` elsewhere, ready to hand a provider.
+fn bindings_from_demand(adornment: &Adornment, demand_row: &[Value]) -> Vec<Option<Value>> {
+    let mut out = vec![None; adornment.arity];
+    let mut i = 0;
+    for (pos, slot) in out.iter_mut().enumerate() {
+        if adornment.bound.contains(pos) {
+            *slot = Some(demand_row[i].clone());
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -147,15 +207,17 @@ mod tests {
     use super::*;
     use crate::lower::NemoProgram;
     use crate::rewrite::rewrite;
-    use crate::testutil::{StubTable, edb_enumerable};
+    use crate::testutil::{StubTable, edb_enumerable, edb_required_bound};
     use gix_query_ir::{
-        Atom, CheckedProgram, Goal, Literal, PredicateEntry, Program, Rule, Stratification, Term,
-        Var, Visibility,
+        Atom, CheckedProgram, Goal, Literal, PredicateEntry, Program, Registry, Rule,
+        RuleAdornments, Stratification, Term, Var, Visibility,
     };
     use std::collections::BTreeMap as Map;
 
-    // Same process-global Nemo timing mutex as `demand`'s tests: run this
-    // module with `--test-threads=1`.
+    // Nemo's `execute()` enters a process-global timing mutex; a second
+    // concurrent evaluation in this process panics and poisons it
+    // permanently. Every test in this module must run with
+    // `--test-threads=1`.
 
     /// `p(B) :- q(A), r(A, B)` with `q` enumerable and `r` an enumerable
     /// two-place EDB relation called free -- both should be preloaded
@@ -215,15 +277,7 @@ mod tests {
             );
         let builtins = StubTable::new();
 
-        let result = run_eager(
-            &rewritten,
-            &emitted,
-            checked.registry(),
-            &facts,
-            &builtins,
-            8,
-        )
-        .expect("converges");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
         assert_eq!(result.rounds, 1, "nothing left to demand after preload");
         assert!(result.log.calls().is_empty());
         assert_eq!(result.answer, vec![vec![s("b1")]]);
@@ -288,15 +342,7 @@ mod tests {
         );
         let builtins = StubTable::new();
 
-        let result = run_eager(
-            &rewritten,
-            &emitted,
-            checked.registry(),
-            &facts,
-            &builtins,
-            8,
-        )
-        .expect("converges");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
         assert!(
             result
                 .log
@@ -307,5 +353,392 @@ mod tests {
             result.log.calls()
         );
         assert_eq!(result.answer, vec![vec![s("deadbeef")]]);
+    }
+
+    /// `p(B) :- q(A, R), anchor_at(A, R, B)`, adapted from the spike's A3
+    /// fixture: `anchor_at` is a builtin, `+A +R -B`, so its call sites are
+    /// demand sites and the loop has to bridge them. Shared by every test
+    /// below that needs a demand chain through a builtin -- carried over from
+    /// `demand.rs`'s own test module, kept here now that this is the only
+    /// evaluator.
+    fn simple_program() -> (CheckedProgram, Goal) {
+        let mut registry = Registry::host();
+        edb_enumerable(&mut registry, "q", 2);
+        registry
+            .insert_predicate(PredicateEntry::idb(
+                PredicateKey::new("p", 1),
+                Visibility::Public,
+            ))
+            .expect("insertable");
+        registry.insert_builtin(gix_query_ir::BuiltinEntry {
+            key: PredicateKey::new("anchor_at", 3),
+            types: vec![],
+            modes: gix_query_ir::ModeVector::new(vec![
+                gix_query_ir::Mode::Bound,
+                gix_query_ir::Mode::Bound,
+                gix_query_ir::Mode::Free,
+            ]),
+            props: gix_query_ir::BuiltinProps::filter(),
+            gate_safe: true,
+            doc: "test builtin",
+        });
+
+        let mut program = Program::new();
+        let id = program.push_rule(
+            Rule::new(
+                Atom::new("p", vec![Term::var("B")]),
+                vec![
+                    Literal::Positive(Atom::new("q", vec![Term::var("A"), Term::var("R")])),
+                    Literal::Builtin(Atom::new(
+                        "anchor_at",
+                        vec![Term::var("A"), Term::var("R"), Term::var("B")],
+                    )),
+                ],
+            ),
+            "test",
+        );
+        let mut adornments = Map::new();
+        adornments.insert(
+            id,
+            RuleAdornments {
+                rule: id,
+                head: Adornment::new(gix_query_ir::ArgSet::empty(), 1),
+                body: vec![
+                    Adornment::new(gix_query_ir::ArgSet::empty(), 2),
+                    Adornment::new(gix_query_ir::ArgSet::from_indices([0, 1]), 3),
+                ],
+            },
+        );
+
+        let checked = CheckedProgram::assemble(
+            program,
+            registry,
+            Stratification::default(),
+            adornments,
+            Map::new(),
+        );
+        let goal = Goal::new(
+            vec![Literal::Positive(Atom::new("p", vec![Term::var("B")]))],
+            vec![Var::new("B")],
+        );
+        (checked, goal)
+    }
+
+    #[test]
+    fn a_flat_query_converges_in_two_rounds() {
+        let (checked, goal) = simple_program();
+        let rewritten = rewrite(&checked, &goal);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+        emitted.audit().expect("audit passes");
+
+        let anchor_at = PredicateKey::new("anchor_at", 3);
+        let builtins = StubTable::new().with(
+            anchor_at,
+            vec![
+                vec![s("a1"), s("r1"), s("blob1")],
+                vec![s("a2"), s("r1"), s("blob2")],
+            ],
+        );
+        let facts = StubTable::new().with(
+            PredicateKey::new("q", 2),
+            vec![vec![s("a1"), s("r1")], vec![s("a2"), s("r1")]],
+        );
+
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        assert_eq!(
+            result.rounds, 2,
+            "one round to ask, one to confirm nothing new"
+        );
+        assert_eq!(result.log.calls().len(), 2);
+        assert!(result.log.calls().iter().all(|c| c.round == 1));
+
+        let mut answer: Vec<Value> = result
+            .answer
+            .into_iter()
+            .map(|row| row[0].clone())
+            .collect();
+        answer.sort();
+        assert_eq!(answer, vec![s("blob1"), s("blob2")]);
+    }
+
+    /// A bare `q/2` EDB predicate and nothing else -- no rules, so no
+    /// unguarded builtin call site to demand eagerly.
+    fn edb_only_program() -> CheckedProgram {
+        let mut registry = Registry::host();
+        edb_enumerable(&mut registry, "q", 2);
+        CheckedProgram::assemble(
+            Program::new(),
+            registry,
+            Stratification::default(),
+            Map::new(),
+            Map::new(),
+        )
+    }
+
+    #[test]
+    fn a_fully_bound_query_returns_existence_not_a_spurious_column() {
+        // The rewrite pads a zero-`select` goal's answer to arity 1 so it
+        // can lower to Nemo at all; this is the readback half, checking
+        // that padding never leaks into what a fully-bound tier-1 query
+        // actually returns.
+        let checked = edb_only_program();
+        let facts = StubTable::new().with(
+            PredicateKey::new("q", 2),
+            vec![vec![s("a1"), s("r1")], vec![s("a2"), s("r1")]],
+        );
+        let builtins = StubTable::new();
+
+        let present = Goal::new(
+            vec![Literal::Positive(Atom::new(
+                "q",
+                vec![Term::sym("a1"), Term::sym("r1")],
+            ))],
+            vec![],
+        );
+        let rewritten = rewrite(&checked, &present);
+        assert!(rewritten.answer_is_nullary);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+        emitted.audit().expect("audit passes");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        assert_eq!(
+            result.answer,
+            vec![Vec::new()],
+            "one empty row signals the query holds, not a row carrying the padding constant"
+        );
+
+        let absent = Goal::new(
+            vec![Literal::Positive(Atom::new(
+                "q",
+                vec![Term::sym("nope"), Term::sym("r1")],
+            ))],
+            vec![],
+        );
+        let rewritten = rewrite(&checked, &absent);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+        emitted.audit().expect("audit passes");
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        assert_eq!(
+            result.answer,
+            Vec::<Vec<Value>>::new(),
+            "no rows signals the query does not hold"
+        );
+    }
+
+    #[test]
+    fn a_call_with_no_answers_is_logged_not_dropped() {
+        let (checked, goal) = simple_program();
+        let rewritten = rewrite(&checked, &goal);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+
+        let anchor_at = PredicateKey::new("anchor_at", 3);
+        let builtins = StubTable::new().with(anchor_at, vec![vec![s("a1"), s("r1"), s("blob1")]]);
+        let facts = StubTable::new().with(
+            PredicateKey::new("q", 2),
+            vec![vec![s("a1"), s("r1")], vec![s("missing"), s("r1")]],
+        );
+
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        let missing = result
+            .log
+            .calls()
+            .iter()
+            .find(|c| c.bound[0] == s("missing"))
+            .expect("the empty call was logged");
+        assert_eq!(missing.answers, 0);
+    }
+
+    #[test]
+    fn the_builtin_is_never_enumerated() {
+        let (checked, goal) = simple_program();
+        let rewritten = rewrite(&checked, &goal);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+
+        let anchor_at = PredicateKey::new("anchor_at", 3);
+        let rows: Vec<_> = (0..10_000)
+            .map(|i| vec![s(&format!("a{i}")), s("r1"), s(&format!("blob{i}"))])
+            .collect();
+        let builtins = StubTable::new().with(anchor_at.clone(), rows);
+        let facts = StubTable::new().with(PredicateKey::new("q", 2), vec![vec![s("a7"), s("r1")]]);
+
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        assert_eq!(builtins.call_count(&anchor_at), 1);
+        assert_eq!(result.answer.len(), 1);
+        assert_eq!(result.answer[0][0], s("blob7"));
+    }
+
+    #[test]
+    fn the_call_log_records_mode_bound_arguments_and_round() {
+        let (checked, goal) = simple_program();
+        let rewritten = rewrite(&checked, &goal);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+        let anchor_at = PredicateKey::new("anchor_at", 3);
+        let builtins =
+            StubTable::new().with(anchor_at.clone(), vec![vec![s("a1"), s("r1"), s("blob1")]]);
+        let facts = StubTable::new().with(PredicateKey::new("q", 2), vec![vec![s("a1"), s("r1")]]);
+
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 8).expect("converges");
+        assert_eq!(result.log.calls().len(), 1);
+        let call = &result.log.calls()[0];
+        assert_eq!(call.base, anchor_at);
+        assert_eq!(call.kind, DemandKind::Builtin);
+        assert_eq!(call.bound, vec![s("a1"), s("r1")]);
+        assert_eq!(call.answers, 1);
+        assert_eq!(call.round, 1);
+    }
+
+    #[test]
+    fn a_program_that_never_converges_is_a_named_error() {
+        // A pathological facts source that always answers with one more
+        // distinct value than was asked, so the loop can never run out of
+        // new demand -- the failure this crate must report rather than spin
+        // on. `q` is fed one row per round from a stub whose facts source
+        // depends on nothing (constant), so the *loop's own bug surface*
+        // would be a real non-convergence; here we simulate it by handing a
+        // vanishingly small round budget instead, which is the same code
+        // path a genuine non-convergence would take.
+        let (checked, goal) = simple_program();
+        let rewritten = rewrite(&checked, &goal);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+        let anchor_at = PredicateKey::new("anchor_at", 3);
+        let builtins = StubTable::new().with(anchor_at, vec![vec![s("a1"), s("r1"), s("blob1")]]);
+        let facts = StubTable::new().with(PredicateKey::new("q", 2), vec![vec![s("a1"), s("r1")]]);
+
+        let err =
+            run_eager(&rewritten, &emitted, &facts, &builtins, 1).expect_err("budget too small");
+        assert!(matches!(err, EvalError::DemandDidNotConverge(1)));
+    }
+
+    /// A cycle in a chain of required-bound demand sites still terminates:
+    /// `follows` here is required-bound, so each hop genuinely goes through
+    /// the loop rather than being answered by eager preload.
+    #[test]
+    fn a_cycle_in_a_required_bound_chain_still_terminates() {
+        let mut registry = Registry::host();
+        edb_enumerable(&mut registry, "seed", 2);
+        edb_required_bound(&mut registry, "follows", 3, &[0]);
+        for (name, arity) in [("q", 2), ("p", 1)] {
+            registry
+                .insert_predicate(PredicateEntry::idb(
+                    PredicateKey::new(name, arity),
+                    Visibility::Public,
+                ))
+                .expect("insertable");
+        }
+        registry.insert_builtin(gix_query_ir::BuiltinEntry {
+            key: PredicateKey::new("anchor_at", 3),
+            types: vec![],
+            modes: gix_query_ir::ModeVector::new(vec![
+                gix_query_ir::Mode::Bound,
+                gix_query_ir::Mode::Bound,
+                gix_query_ir::Mode::Free,
+            ]),
+            props: gix_query_ir::BuiltinProps::filter(),
+            gate_safe: true,
+            doc: "test builtin",
+        });
+        let mut program = Program::new();
+        let mut adornments = Map::new();
+        let free = |arity| Adornment::new(gix_query_ir::ArgSet::empty(), arity);
+        let id = program.push_rule(
+            Rule::new(
+                Atom::new("q", vec![Term::var("A"), Term::var("R")]),
+                vec![Literal::Positive(Atom::new(
+                    "seed",
+                    vec![Term::var("A"), Term::var("R")],
+                ))],
+            ),
+            "test",
+        );
+        adornments.insert(
+            id,
+            RuleAdornments {
+                rule: id,
+                head: free(2),
+                body: vec![free(2)],
+            },
+        );
+        let id = program.push_rule(
+            Rule::new(
+                Atom::new("q", vec![Term::var("A"), Term::var("R")]),
+                vec![
+                    Literal::Positive(Atom::new("p", vec![Term::var("B")])),
+                    Literal::Positive(Atom::new(
+                        "follows",
+                        vec![Term::var("B"), Term::var("A"), Term::var("R")],
+                    )),
+                ],
+            ),
+            "test",
+        );
+        adornments.insert(
+            id,
+            RuleAdornments {
+                rule: id,
+                head: free(2),
+                body: vec![
+                    free(1),
+                    Adornment::new(gix_query_ir::ArgSet::from_indices([0]), 3),
+                ],
+            },
+        );
+        let id = program.push_rule(
+            Rule::new(
+                Atom::new("p", vec![Term::var("B")]),
+                vec![
+                    Literal::Positive(Atom::new("q", vec![Term::var("A"), Term::var("R")])),
+                    Literal::Builtin(Atom::new(
+                        "anchor_at",
+                        vec![Term::var("A"), Term::var("R"), Term::var("B")],
+                    )),
+                ],
+            ),
+            "test",
+        );
+        adornments.insert(
+            id,
+            RuleAdornments {
+                rule: id,
+                head: free(1),
+                body: vec![
+                    free(2),
+                    Adornment::new(gix_query_ir::ArgSet::from_indices([0, 1]), 3),
+                ],
+            },
+        );
+        let checked = CheckedProgram::assemble(
+            program,
+            registry,
+            Stratification::default(),
+            adornments,
+            Map::new(),
+        );
+        let goal = Goal::new(
+            vec![Literal::Positive(Atom::new("p", vec![Term::var("B")]))],
+            vec![Var::new("B")],
+        );
+        let rewritten = rewrite(&checked, &goal);
+        let emitted = NemoProgram::emit(&rewritten).expect("emits");
+
+        let anchor_at = PredicateKey::new("anchor_at", 3);
+        let builtins = StubTable::new().with(
+            anchor_at,
+            vec![
+                vec![s("a1"), s("r1"), s("b1")],
+                vec![s("a2"), s("r2"), s("b2")],
+            ],
+        );
+        // The cycle: b2 follows back to (a1, r1), already answered in round 1.
+        let facts = StubTable::new()
+            .with(PredicateKey::new("seed", 2), vec![vec![s("a1"), s("r1")]])
+            .with(
+                PredicateKey::new("follows", 3),
+                vec![
+                    vec![s("b1"), s("a2"), s("r2")],
+                    vec![s("b2"), s("a1"), s("r1")],
+                ],
+            );
+
+        let result = run_eager(&rewritten, &emitted, &facts, &builtins, 16).expect("converges");
+        assert_eq!(result.log.calls().len(), 4, "each hop asked once");
     }
 }

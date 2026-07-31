@@ -1,15 +1,12 @@
-//! Eager and demand must agree (`DEVPLAN.md` §0, step 3): the safety net
-//! that has to hold before anything routes to [`run_eager`], since it is a
-//! drop-in replacement for [`run_to_fixpoint`] only if this holds over more
-//! than the hand-picked fixtures `eager.rs`'s own unit tests cover.
-//!
-//! The fixture mixes both halves of §0's narrow cut in one program: `commit`,
-//! `parent`, and `author` are required-bound EDB, so they must still be
-//! demanded one bound call at a time under either evaluator; `member` and
-//! `revoked` are ref-glob-enumerable, so `run_eager` preloads them whole
-//! while `run_to_fixpoint` still demands `!revoked(M)` one member at a time.
-//! Random extensional databases exercise both paths identically and assert
-//! the same answer set every time.
+//! `run_eager` is the only evaluator left (`DEVPLAN.md` §0, step 6): the
+//! differential proptest that used to compare it against `run_to_fixpoint`
+//! has nothing left to diff against now that `demand.rs` is gone. What
+//! survives from it is the fixture -- a program mixing both halves of §0's
+//! narrow cut, `commit`/`parent`/`author` required-bound alongside
+//! `member`/`revoked` ref-glob-enumerable -- repurposed to check the property
+//! that actually matters with one evaluator: running it twice from cold over
+//! the same tables, Nemo's own process-global state included, must derive
+//! the same answer set both times.
 
 use std::collections::BTreeMap;
 
@@ -170,7 +167,7 @@ fn answer_rows(run: impl FnOnce() -> gix_query_eval::LoopResult) -> Vec<Vec<Valu
 }
 
 proptest! {
-    // Each case runs both evaluators' Nemo executions fresh, and
+    // Each case runs `run_eager`'s Nemo execution fresh, twice, and
     // `gix-query-eval`'s own module doc pins the process-global timing
     // mutex Nemo's `execute()` enters -- this file, like every other test
     // touching this crate, must run with `--test-threads=1`. Case count kept
@@ -178,7 +175,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
     #[test]
-    fn eager_and_demand_agree_on_touched(case in arb_case()) {
+    fn run_eager_is_deterministic_on_touched(case in arb_case()) {
         let checked = checked_program();
         let mut goal = gix_query_parse::parse_goal_with_select(
             &format!("touched({}, C, M)", case.query_rev),
@@ -192,28 +189,15 @@ proptest! {
         let emitted = gix_query_eval::NemoProgram::emit(&rewritten).expect("emits");
         emitted.audit().expect("audit passes");
 
-        let demand_answer = answer_rows(|| {
-            gix_query_eval::run_to_fixpoint(
-                &rewritten,
-                &emitted,
-                &tables(&case),
-                &NoBuiltins,
-                64,
-            )
-            .expect("demand converges")
-        });
-        let eager_answer = answer_rows(|| {
-            gix_query_eval::run_eager(
-                &rewritten,
-                &emitted,
-                checked.registry(),
-                &tables(&case),
-                &NoBuiltins,
-                64,
-            )
-            .expect("eager converges")
-        });
+        let run = || {
+            answer_rows(|| {
+                gix_query_eval::run_eager(&rewritten, &emitted, &tables(&case), &NoBuiltins, 64)
+                    .expect("eager converges")
+            })
+        };
+        let first = run();
+        let second = run();
 
-        prop_assert_eq!(demand_answer, eager_answer);
+        prop_assert_eq!(first, second);
     }
 }

@@ -1,5 +1,5 @@
-//! Evaluation: the magic-set rewrite, the Nemo lowering, the demand loop, and
-//! derivation-tree recovery.
+//! Evaluation: the magic-set rewrite, the Nemo lowering, eager preload plus
+//! demand for the rest (`DEVPLAN.md` §0), and derivation-tree recovery.
 //!
 //! The only crate permitted to name a [Nemo](https://github.com/knowsys/nemo)
 //! type. Nemo is the engine and it is the only one -- there is no trait here
@@ -7,7 +7,7 @@
 //! whose only client is a test. See `DEVPLAN.md` 2.11.
 //!
 //! Everything above this crate is ours: the grammar, the validation passes,
-//! the mode system, the rewrite, the demand loop, and the call log that
+//! the mode system, the rewrite, [`eager::run_eager`], and the call log that
 //! `explain` reads. What Nemo supplies is the least fixpoint of a stratified
 //! program over a finite extensional database, and nothing else.
 //!
@@ -52,7 +52,6 @@
 
 #[cfg(test)]
 mod conformance;
-mod demand;
 mod eager;
 mod engine;
 mod error;
@@ -65,8 +64,7 @@ mod symbol;
 mod testutil;
 mod trace;
 
-pub use demand::{CallLog, LoggedCall, LoopResult, run_to_fixpoint};
-pub use eager::run_eager;
+pub use eager::{CallLog, LoggedCall, LoopResult, run_eager};
 pub use error::EvalError;
 pub use lower::{NemoProgram, NemoTables};
 pub use rewrite::{DemandKind, DemandSite, LoweredProgram, adorn_body, rewrite as rewrite_program};
