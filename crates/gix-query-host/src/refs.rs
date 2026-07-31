@@ -81,6 +81,10 @@ impl RefStore for HostRefs<'_> {
     fn apply(&self, edit: RefEdit) -> Result<(), ApplyError<Self::Error>> {
         self.view.apply(edit)
     }
+
+    fn apply_batch(&self, edits: Vec<RefEdit>) -> Result<(), ApplyError<Self::Error>> {
+        self.view.apply_batch(edits)
+    }
 }
 
 impl Committer for HostRefs<'_> {
