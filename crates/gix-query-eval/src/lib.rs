@@ -53,6 +53,7 @@
 #[cfg(test)]
 mod conformance;
 mod demand;
+mod eager;
 mod engine;
 mod error;
 #[cfg(test)]
@@ -65,6 +66,7 @@ mod testutil;
 mod trace;
 
 pub use demand::{CallLog, LoggedCall, LoopResult, run_to_fixpoint};
+pub use eager::run_eager;
 pub use error::EvalError;
 pub use lower::{NemoProgram, NemoTables};
 pub use rewrite::{

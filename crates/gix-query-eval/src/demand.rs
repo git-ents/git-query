@@ -58,6 +58,15 @@ impl CallLog {
     pub fn calls(&self) -> &[LoggedCall] {
         &self.0
     }
+
+    /// Build a log from calls already made, in order.
+    ///
+    /// `pub(crate)` rather than a `From` impl: construction is a crate-internal
+    /// concern (`crate::eager` builds its own call sequence), while a consumer
+    /// outside this crate only ever reads one back through [`Self::calls`].
+    pub(crate) fn from_calls(calls: Vec<LoggedCall>) -> Self {
+        Self(calls)
+    }
 }
 
 /// What one round of the loop found.
@@ -190,7 +199,13 @@ pub fn run_to_fixpoint(
 /// Expand a demand relation's row -- values at the bound positions only, in
 /// ascending position order -- into a full `Bindings` pattern: `Some` at
 /// every bound position, `None` elsewhere, ready to hand a provider.
-fn bindings_from_demand(adornment: &Adornment, demand_row: &[Value]) -> Vec<Option<Value>> {
+///
+/// `pub(crate)`: `crate::eager` drives the same required-bound demand sites
+/// this loop does and must expand them identically.
+pub(crate) fn bindings_from_demand(
+    adornment: &Adornment,
+    demand_row: &[Value],
+) -> Vec<Option<Value>> {
     let mut out = vec![None; adornment.arity];
     let mut i = 0;
     for (pos, slot) in out.iter_mut().enumerate() {

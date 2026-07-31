@@ -268,6 +268,25 @@ impl PredicateEntry {
             PredicateClass::Idb { required_bound } => *required_bound,
         }
     }
+
+    /// Whether this predicate's whole extension can be read in one go: an EDB
+    /// predicate with an all-free mode vector.
+    ///
+    /// `DEVPLAN.md` §0's eager path may only preload a predicate whose
+    /// registry entry says so -- a required-bound EDB predicate such as
+    /// `commit/1` or `parent/2` has no all-free vector, precisely because
+    /// enumerating it whole is the unaffordable materialization mode
+    /// discipline exists to prevent. An IDB predicate is never enumerable by
+    /// this definition; it is derived, not read.
+    #[must_use]
+    pub fn is_enumerable(&self) -> bool {
+        match &self.class {
+            PredicateClass::Edb { modes, .. } => {
+                modes.vectors().any(|v| v.required_bound().is_empty())
+            }
+            PredicateClass::Idb { .. } => false,
+        }
+    }
 }
 
 /// The six properties every builtin declares and the validator assumes.
@@ -848,6 +867,38 @@ mod tests {
                 "{name}/{arity} must be enumerable"
             );
         }
+    }
+
+    #[test]
+    fn exactly_the_ref_glob_edb_is_enumerable() {
+        // DEVPLAN.md §0's corrected list: the eight ref-glob predicates, never
+        // the five required-bound ones, never `bind` (IDB).
+        let r = Registry::host();
+        let enumerable = [
+            "member", "revoked", "claim", "kind", "target", "signer", "verdict", "anchor",
+        ];
+        let required_bound = ["commit", "parent", "tree_entry", "author", "line"];
+        for name in enumerable {
+            let e = r
+                .predicates()
+                .find(|e| e.key.name.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            assert!(e.is_enumerable(), "{name} must be enumerable");
+        }
+        for name in required_bound {
+            let e = r
+                .predicates()
+                .find(|e| e.key.name.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            assert!(!e.is_enumerable(), "{name} must not be enumerable");
+        }
+        let bind = r
+            .predicate(&PredicateKey::new("bind", 5))
+            .expect("bind is registered");
+        assert!(
+            !bind.is_enumerable(),
+            "an IDB predicate is never enumerable"
+        );
     }
 
     #[test]
