@@ -38,9 +38,15 @@ fn resource_name(key: &PredicateKey) -> String {
 
 /// Run `program` once against `tables`, returning the finished engine.
 ///
-/// Every round of the demand loop calls this from cold: Nemo has no
-/// incremental entry point, so a *k*-round query pays *k* times. That cost is
-/// [`crate::demand`]'s to carry, not this function's to hide.
+/// Every round of [`crate::eager::run_eager`]'s loop calls this from cold:
+/// Nemo has no incremental entry point, so a *k*-round query pays *k* times.
+/// Cold means the whole of it -- every table re-serialized to CSV, the
+/// program re-rendered to text, and Nemo re-parsing and re-planning both --
+/// so the floor is a fixed per-round cost that does not shrink with the data
+/// (order 10ms release, several times that in a debug build, even for a
+/// handful of facts). An all-eager goal converges in one round and pays it
+/// once; every demand-driven predicate a goal touches adds a round. That cost
+/// is [`crate::eager`]'s to carry, not this function's to hide.
 ///
 /// # Errors
 /// [`EvalError::Nemo`] if Nemo rejects the program or a table's content, with
