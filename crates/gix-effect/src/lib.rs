@@ -10,31 +10,38 @@
 //!   (D3, D4, [`trigger`]); idempotence keys and the signed transition log
 //!   (D5, D8, [`record`]).
 //!
-//! Still not here, per `DEVPLAN-effect.md`'s "Phases" table: the `Executor`
-//! trait, the write-set boundary check, the `Action` schema, gate evaluation,
-//! and the authorization gate (D6, D7) -- Phase B3, which ends with worked
-//! example 3 as an integration test.
+//! - **Phase B3** -- the `Executor` trait, the write-set boundary check, the
+//!   `Action` schema, and the authorization gate (D6, D7, [`record`],
+//!   [`run`]), plus `status`/`log` in the `git-effect` binary.
 //!
 //! What this crate calls rather than reimplements, per D9: rule-language
 //! parsing and validation (`gix-query-parse`/`gix-query-check`, through the
 //! `gix-query` facade), the acyclicity check and footprint-to-namespace
 //! projection (`gix_query::check_effect_acyclicity`/`body_read_namespaces`,
 //! C4), evaluation (`gix_query::run_goal`/`run_body`, Nemo through the
-//! facade -- never `gix-query-eval` directly), and typed-doc storage, ref CAS,
-//! and hashing/normal form (`gix-store`/`facet-git-tree`). `Namespace` and
-//! `EffectDecl` come from `gix-query-ir` via the facade; this crate does not
-//! redeclare them.
+//! facade -- never `gix-query-eval` directly), typed-doc storage, ref CAS,
+//! and hashing/normal form (`gix-store`/`facet-git-tree`), and the claim
+//! envelope, signing, and verification (`gix-attest`, called for
+//! authorization and action-record emission -- never re-implemented here).
+//! `Namespace` and `EffectDecl` come from `gix-query-ir` via the facade; this
+//! crate does not redeclare them.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 mod doc;
 mod record;
+mod run;
 mod trigger;
 
 pub use doc::{EffectDoc, EffectStore, Error, Then};
 pub use record::{
-    ACTION_KEY_SEAM, EditRecord, Outcome, RecordError, RecordOutcome, RecordStore,
-    TransitionRecord, advance_key,
+    ACTION_KIND, ACTION_TARGET_KIND, Action, ActionKey, EditRecord, Outcome, Param, RecordError,
+    RecordOutcome, RecordStore, TransitionRecord, action_key, advance_key, compile_action,
+    register_action_schema,
+};
+pub use run::{
+    BoundaryError, ExecError, Executor, RunError, action_target, authorized, check_boundary,
+    fire_advance, fire_run, record_action,
 };
 pub use trigger::{
     Firing, Intent, IntentError, IntentStore, Transition, TriggerDetector, TriggerError,

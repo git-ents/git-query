@@ -1,18 +1,16 @@
 //! `git effect` -- the one binary for the effect subsystem.
 //!
 //! `ARCHITECTURE.md`'s git-effect section names the CLI shape `define`,
-//! `status`, `log`. This phase (`DEVPLAN-effect.md` Phase B1, "freeze the
-//! doc") wires up `define` only; `status` and `log` are scaffolded so the
-//! subcommand exists and fails loudly rather than silently doing nothing --
-//! both read the transition log (D8), which does not exist until Phase B3.
+//! `status`, `log`. Phase B1 wired up `define`; Phase B3 (D8) adds `status`
+//! and `log`, both reading the transition log at `refs/effects/log`.
 
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use clap::{Parser, Subcommand};
-use gix_effect::{EffectDoc, EffectStore, Then};
+use gix_effect::{EffectDoc, EffectStore, RecordStore, Then, TransitionRecord};
 use serde::Deserialize;
 
 #[derive(Parser)]
@@ -41,12 +39,22 @@ enum Command {
         repo: Option<std::path::PathBuf>,
     },
     /// Show the current state of every effect doc, joined with its last
-    /// transition. Not implemented in this phase: the transition log (D8)
-    /// this reads does not exist until Phase B3.
-    Status,
-    /// Show signed transition records. Not implemented in this phase: the
-    /// transition log (D8) does not exist until Phase B3.
-    Log,
+    /// transition (D8: "current effect docs joined with their last log
+    /// entries -- a query, run through query").
+    Status {
+        /// Which repository to read. Defaults to discovering one from the
+        /// current directory.
+        #[arg(long)]
+        repo: Option<std::path::PathBuf>,
+    },
+    /// Show every signed transition record at `refs/effects/log`, oldest
+    /// first by idempotence key.
+    Log {
+        /// Which repository to read. Defaults to discovering one from the
+        /// current directory.
+        #[arg(long)]
+        repo: Option<std::path::PathBuf>,
+    },
 }
 
 /// The on-disk shape a `define` file is parsed from.
@@ -129,15 +137,76 @@ fn open_repo(repo: Option<std::path::PathBuf>) -> anyhow::Result<gix::Repository
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Define { doc, repo } => run_define(&doc, repo),
-        Command::Status => bail!(
-            "`git effect status` is not implemented in this phase -- it reads the transition \
-             log (DEVPLAN-effect.md D8), which Phase B3 adds"
-        ),
-        Command::Log => bail!(
-            "`git effect log` is not implemented in this phase -- the transition log \
-             (DEVPLAN-effect.md D8) does not exist until Phase B3"
-        ),
+        Command::Status { repo } => run_status(repo),
+        Command::Log { repo } => run_log(repo),
     }
+}
+
+/// A [`gix_store::Signer`] that is never asked to sign anything: `status` and
+/// `log` only read [`RecordStore`], and [`RecordStore::open`] takes a signer
+/// eagerly for writers to reuse, but a reader has nothing to sign.
+struct NeverSigner;
+
+impl gix_store::Signer for NeverSigner {
+    type Error = std::convert::Infallible;
+
+    fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
+        unreachable!("`git effect status`/`log` never write, so this is never called")
+    }
+}
+
+fn run_status(repo: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+    let repo = open_repo(repo)?;
+    let effects = EffectStore::open(&repo)?.list()?;
+    let records = RecordStore::open(&repo, NeverSigner)?;
+    let log = records.log()?;
+
+    for effect in effects {
+        let last = log
+            .iter()
+            .filter(|r| r.effect == effect.name)
+            .max_by_key(|r| r.key.clone());
+        match last {
+            Some(record) => println!(
+                "{}: last {} ({})",
+                effect.name,
+                outcome_label(&record.outcome),
+                record.key
+            ),
+            None => println!("{}: never fired", effect.name),
+        }
+    }
+    Ok(())
+}
+
+fn run_log(repo: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+    let repo = open_repo(repo)?;
+    let records = RecordStore::open(&repo, NeverSigner)?;
+    let mut log = records.log()?;
+    log.sort_by(|a, b| a.key.cmp(&b.key));
+
+    for record in &log {
+        print_record(record);
+    }
+    Ok(())
+}
+
+fn outcome_label(outcome: &gix_effect::Outcome) -> String {
+    match outcome {
+        gix_effect::Outcome::Advanced => "advanced".to_owned(),
+        gix_effect::Outcome::Failed { reason } => format!("failed ({reason})"),
+    }
+}
+
+fn print_record(record: &TransitionRecord) {
+    println!(
+        "{} {} [{} -> {}] key {}",
+        record.effect, record.ref_, record.old, record.new, record.key
+    );
+    for edit in &record.edits {
+        println!("  {}: {} -> {}", edit.ref_, edit.old, edit.new);
+    }
+    println!("  outcome: {}", outcome_label(&record.outcome));
 }
 
 fn run_define(doc: &std::path::Path, repo: Option<std::path::PathBuf>) -> anyhow::Result<()> {
@@ -177,11 +246,80 @@ mod tests {
     }
 
     #[test]
-    fn status_and_log_parse_but_are_wired_to_fail_loudly() {
-        assert!(matches!(parse(&["status"]).command, Command::Status));
-        assert!(matches!(parse(&["log"]).command, Command::Log));
-        assert!(run(Command::Status).is_err());
-        assert!(run(Command::Log).is_err());
+    fn status_and_log_parse() {
+        assert!(matches!(
+            parse(&["status"]).command,
+            Command::Status { repo: None }
+        ));
+        assert!(matches!(
+            parse(&["log"]).command,
+            Command::Log { repo: None }
+        ));
+    }
+
+    /// `status`/`log` outside any repository fail loudly rather than
+    /// silently answering nothing.
+    #[test]
+    fn status_and_log_fail_outside_a_repository() {
+        let missing = Some(std::path::PathBuf::from("/nonexistent-git-effect-fixture"));
+        assert!(
+            run(Command::Status {
+                repo: missing.clone()
+            })
+            .is_err()
+        );
+        assert!(run(Command::Log { repo: missing }).is_err());
+    }
+
+    /// `status` reports every defined effect, joined with its last transition
+    /// -- "never fired" for one with no log entry, the outcome for one that
+    /// has. `log` lists every recorded transition.
+    #[test]
+    fn status_and_log_report_the_defined_effects_and_their_transitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = test_support::Fixture::init(dir.path());
+        fixture.commit("first");
+        let repo = fixture.open();
+
+        let store = gix_effect::EffectStore::open(&repo).unwrap();
+        store
+            .define(gix_effect::EffectDoc {
+                name: "never-fired".to_owned(),
+                when: "member(M)".to_owned(),
+                gate: "member(M)".to_owned(),
+                then: gix_effect::Then::Advance {
+                    ref_: "refs/heads/main".to_owned(),
+                    to: "HEAD".to_owned(),
+                },
+                writes: vec!["refs/heads/main".to_owned()],
+            })
+            .unwrap();
+
+        struct FixedSigner;
+        impl gix_store::Signer for FixedSigner {
+            type Error = std::convert::Infallible;
+            fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
+                Ok(gix_store::SignatureBytes::from(b"sig".to_vec()))
+            }
+        }
+        let records = RecordStore::open(&repo, FixedSigner).unwrap();
+        records
+            .record(
+                "aabb",
+                TransitionRecord {
+                    effect: "never-fired".to_owned(),
+                    ref_: "refs/heads/main".to_owned(),
+                    old: String::new(),
+                    new: "cc".to_owned(),
+                    key: "aabb".to_owned(),
+                    edits: vec![],
+                    outcome: gix_effect::Outcome::Advanced,
+                },
+            )
+            .unwrap();
+
+        assert!(run_status(Some(dir.path().to_path_buf())).is_ok());
+        assert!(run_log(Some(dir.path().to_path_buf())).is_ok());
     }
 
     /// An `advance` doc parses into [`Then::Advance`] with the fields TOML

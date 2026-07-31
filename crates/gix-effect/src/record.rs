@@ -1,18 +1,22 @@
-//! Idempotence keys (D5) and the transition log (D8).
+//! Idempotence keys (D5), the `Action` schema (D7), and the transition log
+//! (D8).
 //!
 //! `DEVPLAN-effect.md` D5: a pure advance's idempotence key is
 //! `normal_form::hash({effect: <doc tree hash>, trigger: {ref, old, new}})`,
 //! through `facet-git-tree`'s frozen normal form -- "there is no key crate."
-//! D8: each performed transition appends a typed doc `{effect, trigger, key,
-//! edits, outcome}` to `refs/effects/log`, signed via store's `Signer` seam
-//! by the executing identity.
+//! An executor run's is [`action_key`], the same hash over `Action.key`. D7:
+//! `Action { key: { executor, inputs, params }, output }`, `key` marked
+//! identity-bearing, registered at `refs/schema/action`. D8: each performed
+//! transition appends a typed doc `{effect, trigger, key, edits, outcome}` to
+//! `refs/effects/log`, signed via store's `Signer` seam by the executing
+//! identity.
 //!
 //! What this module does *not* do: decide whether a transition should
-//! happen. That is gate evaluation and the authorization gate (D6/D7,
-//! `Executor`, the write-set boundary check) -- Phase B3. This module is the
-//! record of a transition already decided and performed, which is exactly
-//! what makes at-least-once delivery from hooks safe: a caller that computes
-//! the same key twice (a hook retried after a timeout, say) finds the first
+//! happen, invoke an executor, or check the write-set boundary. That is
+//! [`crate::run`] (D6) -- this module is the vocabulary an executed
+//! transition is expressed in and recorded through, which is exactly what
+//! makes at-least-once delivery from hooks safe: a caller that computes the
+//! same key twice (a hook retried after a timeout, say) finds the first
 //! record already logged and treats the second call as a no-op, instead of
 //! performing the transition twice.
 
@@ -66,19 +70,145 @@ pub fn advance_key(
     Ok(key)
 }
 
-/// D5's second case, named rather than built: an executor run's idempotence
-/// key is the Action key of the invoked run -- `normal_form::hash({executor,
-/// inputs, params})`. The `Action` schema is D7/Phase B3's, not this phase's
-/// (`DEVPLAN-effect.md`'s "Phases": D6/D7 land in B3), so there is
-/// deliberately no `action_key` function here. A function guessing at
-/// `Action`'s shape now would be worse than the honest gap: B3 would either
-/// have to match a guess it never agreed to, or break this module's public
-/// surface to replace it. [`advance_key`] and [`RecordStore`] below are
-/// written so that adding an `action_key` counterpart later requires no
-/// change to either -- [`RecordStore::record`] takes a key by value, not by
-/// deriving it from a `Then` variant.
-pub const ACTION_KEY_SEAM: &str =
-    "D7/Phase B3: Action{ executor, inputs, params }, not yet defined";
+/// D7: the `Action` schema, "registered by `gix-effect`, pro tem." One
+/// labeled parameter -- `params` is a list rather than a map because the
+/// identity normal form's `Struct`/`Map` shapes both demand either
+/// schema-fixed field names or a scalar key type spelled out by hand, and a
+/// plain `{name, value}` pair sidesteps both without losing anything
+/// `ARCHITECTURE.md`'s examples need ("engine version, diff algorithm,
+/// grammar version" are exactly this shape).
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+pub struct Param {
+    /// The parameter's name -- `"engine-version"`, `"diff-algorithm"`, ...
+    pub name: String,
+    /// Its value.
+    pub value: String,
+}
+
+/// `Action.key`: `{executor, inputs, params}`, identity- and key-bearing as a
+/// whole (`ARCHITECTURE.md`'s action, D7) -- the action key is the store hash
+/// of this subtree through the identity normal form, exactly the anchor-id
+/// move, so `#[facet(facet_git_tree::identity_key)]` on the whole struct is
+/// what [`crate::doc::EffectStore`]'s schema registration path (via
+/// [`register_action_schema`]) enforces the universe constraint on: `inputs`
+/// and `params` must be expressible in it, or defining the schema fails
+/// before anything is published.
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+#[facet(facet_git_tree::identity_key)]
+pub struct ActionKey {
+    /// The executor's id and version, as one opaque label.
+    pub executor: String,
+    /// Pinned content hashes -- everything the action was run over.
+    pub inputs: Vec<gix_attest::Oid>,
+    /// Everything else that affects the output and is not ambient: engine
+    /// version, diff algorithm, grammar version, and the like.
+    pub params: Vec<Param>,
+}
+
+/// A hermetic derivation record (`ARCHITECTURE.md`'s "action (not a
+/// product)"): `key` names the run, `output` is what it produced.
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+pub struct Action {
+    /// What was run, over what, with what parameters.
+    pub key: ActionKey,
+    /// The content hash the run produced.
+    pub output: gix_attest::Oid,
+}
+
+/// The kind name [`Action`]'s schema is published under -- `refs/schema/action`
+/// under attest's layout ([`gix_attest::layout`]), which is exactly D7's "registered
+/// at `refs/schema/action`."
+pub const ACTION_KIND: &str = "action";
+
+/// The [`Target::kind`](gix_attest::Target::kind) label an action record's
+/// claim carries, and the [`Envelope::payload_kind`](gix_attest::Envelope::payload_kind)
+/// its payload is written under -- one string for both, since a consumer
+/// joins a payload kind against `refs/schema/<kind>` the same way
+/// [`gix_attest`]'s own key and claim kinds do.
+pub const ACTION_TARGET_KIND: &str = ACTION_KIND;
+
+fn action_segment() -> gix_store::RefSegment {
+    gix_store::RefSegment::new(ACTION_KIND).expect("the action kind is a valid ref segment")
+}
+
+/// `key` in the identity normal form's closed universe, by hand -- the same
+/// move as `gix_attest::Target`'s `to_normal_form`: the mapping has no
+/// reflection path from an arbitrary `Facet` type, so the field names here
+/// must match [`ActionKey`]'s, which [`register_action_schema`]'s universe
+/// check keeps honest.
+fn to_normal_form(key: &ActionKey) -> NormalForm {
+    let inputs = key
+        .inputs
+        .iter()
+        .map(|oid| NormalForm::Hash(gix::ObjectId::from(*oid)))
+        .collect();
+    let params = key
+        .params
+        .iter()
+        .map(|p| {
+            let mut fields = BTreeMap::new();
+            fields.insert("name".to_owned(), NormalForm::Str(p.name.clone()));
+            fields.insert("value".to_owned(), NormalForm::Str(p.value.clone()));
+            NormalForm::Struct(fields)
+        })
+        .collect();
+    let mut fields = BTreeMap::new();
+    fields.insert("executor".to_owned(), NormalForm::Str(key.executor.clone()));
+    fields.insert("inputs".to_owned(), NormalForm::List(inputs));
+    fields.insert("params".to_owned(), NormalForm::List(params));
+    NormalForm::Struct(fields)
+}
+
+/// D5's second idempotence key: the Action key of the invoked run.
+///
+/// # Errors
+/// [`facet_git_tree::NormalFormError`] if the value somehow fails to hash --
+/// unreachable for this closed, all-scalar shape, but propagated rather than
+/// unwrapped since [`normal_form::hash`] itself is fallible.
+pub fn action_key(key: &ActionKey) -> Result<gix::ObjectId, facet_git_tree::NormalFormError> {
+    let (key, _objects) = normal_form::hash(&to_normal_form(key))?;
+    Ok(key)
+}
+
+/// Publish [`Action`]'s schema under [`ACTION_KIND`] in `store` -- the
+/// identity-universe check every schema registration runs
+/// ([`gix_store::KindSchema::write`]) is what this crate leans on for D7's
+/// "`params` must be expressible in the identity normal form. Enforced at
+/// schema registration": a future `ActionKey` field that left the universe
+/// (an enum, an `Option`) would fail here, not at `action_key` time.
+///
+/// # Errors
+/// [`RecordError::Schema`] when the schema cannot be derived from [`Action`];
+/// [`RecordError::Store`] when the store write fails, including the universe
+/// refusal above.
+pub fn register_action_schema<R, O>(
+    store: &gix_store::Store<R, O>,
+) -> Result<gix::ObjectId, RecordError>
+where
+    R: gix_store::RefStore + gix_store::Committer,
+    O: gix::objs::Find + gix::objs::Write,
+{
+    Ok(store.kind::<Action>(action_segment()).publish()?)
+}
+
+/// Compile `action` into the payload tree an [`gix_attest::Envelope`] carries
+/// -- store's `{value/, schema/}` document tree, not a bare serialization, so
+/// a reader with no `Action` type of its own can still decode it against the
+/// schema [`register_action_schema`] published.
+///
+/// # Errors
+/// [`RecordError::Store`] when no schema is published yet, or compilation
+/// fails.
+pub fn compile_action<R, O>(
+    store: &gix_store::Store<R, O>,
+    action: &Action,
+) -> Result<gix::ObjectId, RecordError>
+where
+    R: gix_store::RefStore + gix_store::Committer,
+    O: gix::objs::Find + gix::objs::Write,
+{
+    Ok(store.kind::<Action>(action_segment()).compile(action)?)
+}
 
 /// What a transition record says happened -- D8's `outcome` field.
 ///
@@ -391,5 +521,77 @@ mod tests {
             1,
             "the no-op must not have appended a second entry"
         );
+    }
+
+    fn action_key_of(executor: &str, input: u8, param: &str) -> ActionKey {
+        ActionKey {
+            executor: executor.to_owned(),
+            inputs: vec![gix::ObjectId::from_bytes_or_panic(&[input; 20]).into()],
+            params: vec![Param {
+                name: "diff-algorithm".to_owned(),
+                value: param.to_owned(),
+            }],
+        }
+    }
+
+    /// D5's second case: the action key is a pure function of `executor`,
+    /// `inputs`, and `params` -- same inputs, same key, and changing any one
+    /// field changes it.
+    #[test]
+    fn action_key_is_deterministic_and_every_field_participates() {
+        let base = action_key_of("kiln", 0x11, "myers");
+        let a = action_key(&base).unwrap();
+        let b = action_key(&base).unwrap();
+        assert_eq!(a, b, "same inputs, same key");
+
+        assert_ne!(
+            a,
+            action_key(&action_key_of("other", 0x11, "myers")).unwrap()
+        );
+        assert_ne!(
+            a,
+            action_key(&action_key_of("kiln", 0x22, "myers")).unwrap()
+        );
+        assert_ne!(
+            a,
+            action_key(&action_key_of("kiln", 0x11, "patience")).unwrap()
+        );
+    }
+
+    /// D7: `Action`'s schema registers under `refs/schema/action` in attest's
+    /// own layout, so its target key composes with a claim's `payload_kind`
+    /// exactly like `gix-attest`'s own key and claim kinds.
+    #[test]
+    fn the_action_schema_registers_at_refs_schema_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Fixture::init(dir.path());
+        let repo = fixture.open();
+        let store = gix_store::RepoStore::open_with_layout(&repo, gix_attest::layout());
+        register_action_schema(&store).unwrap();
+
+        let raw = fixture.git(&["for-each-ref", "refs/schema/action"]);
+        assert!(!raw.is_empty(), "refs/schema/action must exist: {raw:?}");
+    }
+
+    /// `compile_action` produces the same `{value/, schema/}` document tree
+    /// any store document does -- a pure function of the action and the
+    /// published schema, with no ref advanced.
+    #[test]
+    fn compile_action_is_pure_and_repeatable() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Fixture::init(dir.path());
+        let repo = fixture.open();
+        let store = gix_store::RepoStore::open_with_layout(&repo, gix_attest::layout());
+        register_action_schema(&store).unwrap();
+
+        let action = Action {
+            key: action_key_of("kiln", 0xaa, "myers"),
+            output: gix::ObjectId::from_bytes_or_panic(&[0xbb; 20]).into(),
+        };
+        let refs_before = fixture.refs();
+        let first = compile_action(&store, &action).unwrap();
+        let second = compile_action(&store, &action).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(fixture.refs(), refs_before, "compiling advances no ref");
     }
 }

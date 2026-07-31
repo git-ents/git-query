@@ -111,8 +111,13 @@ impl ClaimFixture {
         Self { key_claim, ..this }
     }
 
-    /// A signing store over the fixture's repository, in attest's own layout.
-    fn store(&self) -> RepoStore<'_> {
+    /// A signing store over the fixture's repository, in attest's own
+    /// layout -- exposed so a consumer whose own write path drives
+    /// `gix-attest` directly (`gix-effect`'s executor seam, D6) can sign real
+    /// claims through it rather than re-deriving the `ssh-keygen` plumbing
+    /// itself.
+    #[must_use]
+    pub fn store(&self) -> RepoStore<'_> {
         RepoStore::open_with_layout(&self.repo, gix_attest::layout()).with_signer(SshKeygen {
             key: self.key.clone(),
         })
