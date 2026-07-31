@@ -49,7 +49,7 @@ pub use canonical::Canonicalizer;
 pub use checked::{CheckedProgram, Footprint, Stratification};
 pub use effect::{EffectDecl, Namespace};
 pub use error::Error;
-pub use host::{Bindings, Builtin, Comparisons, Fact, FactSource, Facts, HostError};
+pub use host::{Bindings, Builtin, Comparisons, Fact, FactSource, Facts, HostError, Layered};
 pub use literal::{Atom, Compare, CompareOp, Literal, PredicateKey};
 pub use mode::{Adornment, ArgSet, GoalAdornments, Mode, ModeVector, RuleAdornments};
 pub use registry::{

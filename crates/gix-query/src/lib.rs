@@ -17,14 +17,19 @@
 
 use std::sync::Arc;
 
-use gix_query_host::{AllBuiltins, RepoFacts};
+use gix_query_host::AllBuiltins;
 use gix_query_ir::{CheckedProgram, Registry};
 
 mod cache;
 
 pub use cache::{CacheError, QueryCache};
 pub use gix_query_eval::{DerivationTree, NegationWitness};
-pub use gix_query_ir::{EffectDecl, Footprint, Namespace, Registry as HostRegistry, Value};
+pub use gix_query_host::RepoFacts;
+pub use gix_query_ir::{
+    ArgSet, Backing, Bindings, EffectDecl, Error as RegistryError, Fact, FactSource, Facts,
+    Footprint, HostError, Layered, Namespace, PredicateEntry, PredicateKey,
+    Registry as HostRegistry, Value, ValueType, Visibility,
+};
 pub use gix_query_rules::RuleStore;
 pub use gix_refstore::RefName;
 
@@ -286,9 +291,29 @@ fn body_footprint(
 /// # Errors
 /// See [`gix_query_rules::Error`].
 pub fn checked_program(repo: &gix::Repository) -> Result<CheckedProgram, QueryError> {
-    let registry = Registry::host();
+    checked_program_with(repo, &Registry::host())
+}
+
+/// [`checked_program`], but assembled against `registry` instead of
+/// [`Registry::host`].
+///
+/// This is the seam a downstream consumer (`git-forge`, per
+/// ARCHITECTURE.md's "extension-contributed predicates") uses to add its own
+/// EDB entries -- built with [`PredicateEntry::edb`] and
+/// [`Registry::insert_predicate`] on a clone of [`Registry::host`] -- and
+/// still get every one of `gix_query_rules::assemble`'s nine validation
+/// passes over the combined signature set. There is no way to assemble a
+/// program that skips them: this function *is* `assemble`, called with a
+/// caller-supplied registry instead of a hardcoded one.
+///
+/// # Errors
+/// See [`gix_query_rules::Error`].
+pub fn checked_program_with(
+    repo: &gix::Repository,
+    registry: &Registry,
+) -> Result<CheckedProgram, QueryError> {
     let store = RuleStore::open(repo)?;
-    Ok(gix_query_rules::assemble(&store, &registry)?)
+    Ok(gix_query_rules::assemble(&store, registry)?)
 }
 
 /// Parse `goal_text`, projecting `select`, and run it against `repo`.
@@ -308,14 +333,46 @@ pub fn run_goal(
     goal_text: &str,
     select: &[&str],
 ) -> Result<Vec<Vec<Value>>, QueryError> {
-    let checked = checked_program(repo)?;
+    let facts = RepoFacts::new(repo);
+    run_goal_with(repo, &Registry::host(), &facts, goal_text, select)
+}
+
+/// [`run_goal`], but resolved against `registry` and evaluated against
+/// `facts` layered over [`RepoFacts::new`], instead of [`Registry::host`]
+/// and [`RepoFacts::new`] alone.
+///
+/// This is the tier-3 half of the seam: a consumer assembles
+/// [`checked_program_with`] over its own `registry` (host predicates plus its
+/// own, via [`PredicateEntry::edb`] and [`Registry::insert_predicate`]) and
+/// supplies a [`FactSource`] answering for just its own contributed
+/// predicates -- this function composes it with a fresh [`RepoFacts`] via
+/// [`Layered`] (`facts` takes priority on any key both claim), so a goal may
+/// join a consumer-contributed predicate against a built-in one (`commit/1`,
+/// `verdict/2`, ...) in the same rule body without `facts` having to answer
+/// for the host EDB itself. `registry` and the combined source must agree on
+/// what they each provide: a predicate `registry` declares but neither
+/// `facts` nor [`RepoFacts`] answers for surfaces as
+/// [`HostError::NoProvider`] from [`gix_query_eval`], not silently as no
+/// rows.
+///
+/// # Errors
+/// See [`QueryError`].
+pub fn run_goal_with<F: FactSource>(
+    repo: &gix::Repository,
+    registry: &Registry,
+    facts: &F,
+    goal_text: &str,
+    select: &[&str],
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program_with(repo, registry)?;
 
     let mut goal = gix_query_parse::parse_goal_with_select(goal_text, select)
         .map_err(|e| QueryError::Parse(join(&e)))?;
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    let facts = RepoFacts::new(repo);
-    run_checked_goal(repo, &facts, &checked, &goal)
+    let repo_facts = RepoFacts::new(repo);
+    let combined = Layered::new(facts, &repo_facts);
+    run_checked_goal(repo, &combined, &checked, &goal)
 }
 
 /// [`run_goal`], answered from `cache` when `goal_text`'s cache key
@@ -363,14 +420,31 @@ pub fn run_goal_cached(
 /// # Errors
 /// See [`QueryError`].
 pub fn run_body(repo: &gix::Repository, body_source: &str) -> Result<Vec<Vec<Value>>, QueryError> {
-    let checked = checked_program(repo)?;
+    let facts = RepoFacts::new(repo);
+    run_body_with(repo, &Registry::host(), &facts, body_source)
+}
+
+/// [`run_body`], but resolved against `registry` and evaluated against
+/// `facts` layered over [`RepoFacts::new`], on the same terms as
+/// [`run_goal_with`].
+///
+/// # Errors
+/// See [`QueryError`].
+pub fn run_body_with<F: FactSource>(
+    repo: &gix::Repository,
+    registry: &Registry,
+    facts: &F,
+    body_source: &str,
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program_with(repo, registry)?;
 
     let mut goal =
         gix_query_parse::parse_goal(body_source).map_err(|e| QueryError::Parse(join(&e)))?;
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    let facts = RepoFacts::new(repo);
-    run_checked_goal(repo, &facts, &checked, &goal)
+    let repo_facts = RepoFacts::new(repo);
+    let combined = Layered::new(facts, &repo_facts);
+    run_checked_goal(repo, &combined, &checked, &goal)
 }
 
 /// [`run_body`], answered from `cache`, on the same terms as
@@ -446,7 +520,28 @@ pub fn run_predicate(
     predicate: &str,
     bound: &[(usize, Value)],
 ) -> Result<Vec<Vec<Value>>, QueryError> {
-    let checked = checked_program(repo)?;
+    let facts = RepoFacts::new(repo);
+    run_predicate_with(repo, &Registry::host(), &facts, predicate, bound)
+}
+
+/// [`run_predicate`], but resolved against `registry` and evaluated against
+/// `facts` layered over [`RepoFacts::new`], on the same terms as
+/// [`run_goal_with`] -- `predicate` may name a consumer-contributed EDB
+/// entry `registry` declares, in addition to every host predicate, builtin,
+/// and rule module `pub` name [`run_predicate`] itself resolves.
+///
+/// # Errors
+/// See [`QueryError`]. [`QueryError::UnknownPredicate`] and
+/// [`QueryError::BindOutOfRange`] are tier 1's own; the rest are shared with
+/// [`run_goal_with`].
+pub fn run_predicate_with<F: FactSource>(
+    repo: &gix::Repository,
+    registry: &Registry,
+    facts: &F,
+    predicate: &str,
+    bound: &[(usize, Value)],
+) -> Result<Vec<Vec<Value>>, QueryError> {
+    let checked = checked_program_with(repo, registry)?;
 
     let key = checked
         .registry()
@@ -468,8 +563,9 @@ pub fn run_predicate(
     let mut goal = gix_query_parse::goal_from_predicate(key.name.clone(), key.arity, bound);
     gix_query_parse::resolve_goal(&mut goal, checked.registry());
 
-    let facts = RepoFacts::new(repo);
-    run_checked_goal(repo, &facts, &checked, &goal)
+    let repo_facts = RepoFacts::new(repo);
+    let combined = Layered::new(facts, &repo_facts);
+    run_checked_goal(repo, &combined, &checked, &goal)
 }
 
 /// Shared tail of tiers 1 and 3: validate a resolved [`gix_query_ir::Goal`]
@@ -477,11 +573,17 @@ pub fn run_predicate(
 /// emission, and run it to a demand fixpoint against `repo` through `facts`.
 ///
 /// `facts` is supplied rather than built here so a caller chooses live
-/// ([`RepoFacts::new`]) or as-of ([`RepoFacts::as_of`]) evaluation -- the
-/// only difference [`run_body_as_of`] has from [`run_body`].
+/// ([`RepoFacts::new`]) or as-of ([`RepoFacts::as_of`]) evaluation, or its own
+/// [`FactSource`] composed with either via [`Layered`] -- the seam
+/// [`run_goal_with`] and [`run_predicate_with`] give a consumer, and the only
+/// difference [`run_body_as_of`] has from [`run_body`]. `facts` is `&dyn
+/// FactSource` rather than a generic parameter because this function and
+/// [`run_checked_goal_full`] are themselves internal and monomorphize for no
+/// caller; [`gix_query_eval::run_eager`] already takes its `facts` argument
+/// the same way.
 fn run_checked_goal(
     repo: &gix::Repository,
-    facts: &RepoFacts<'_>,
+    facts: &dyn FactSource,
     checked: &CheckedProgram,
     goal: &gix_query_ir::Goal,
 ) -> Result<Vec<Vec<Value>>, QueryError> {
@@ -494,7 +596,7 @@ fn run_checked_goal(
 /// state a fresh call would otherwise discard.
 fn run_checked_goal_full(
     repo: &gix::Repository,
-    facts: &RepoFacts<'_>,
+    facts: &dyn FactSource,
     checked: &CheckedProgram,
     goal: &gix_query_ir::Goal,
 ) -> Result<
@@ -594,6 +696,70 @@ pub fn explain_predicate(
 
     let facts = RepoFacts::new(repo);
     let (rewritten, emitted, result) = run_checked_goal_full(repo, &facts, &checked, &goal)?;
+
+    Ok(gix_query_eval::explain(
+        &emitted,
+        &result.tables,
+        &rewritten,
+        &key,
+        &tuple,
+    )?)
+}
+
+/// [`explain_predicate`], but resolved against `registry` and evaluated
+/// against `facts` layered over [`RepoFacts::new`], on the same terms as
+/// [`run_predicate_with`] -- `predicate` may name a consumer-contributed EDB
+/// entry `registry` declares.
+///
+/// # Errors
+/// See [`explain_predicate`].
+pub fn explain_predicate_with<F: FactSource>(
+    repo: &gix::Repository,
+    registry: &Registry,
+    facts: &F,
+    predicate: &str,
+    bound: &[(usize, Value)],
+) -> Result<Option<gix_query_eval::DerivationTree>, QueryError> {
+    let checked = checked_program_with(repo, registry)?;
+
+    let key = checked
+        .registry()
+        .predicates()
+        .find(|entry| entry.key.name.as_ref() == predicate)
+        .map(|entry| entry.key.clone())
+        .ok_or_else(|| QueryError::UnknownPredicate(predicate.to_owned()))?;
+
+    for (position, _) in bound {
+        if *position >= key.arity {
+            return Err(QueryError::BindOutOfRange {
+                predicate: predicate.to_owned(),
+                position: *position,
+                arity: key.arity,
+            });
+        }
+    }
+    if bound.len() != key.arity {
+        return Err(QueryError::ExplainRequiresGroundTuple {
+            predicate: predicate.to_owned(),
+            arity: key.arity,
+            bound: bound.len(),
+        });
+    }
+    let mut tuple: Vec<Option<Value>> = vec![None; key.arity];
+    for (position, value) in bound {
+        tuple[*position] = Some(value.clone());
+    }
+    let tuple: Vec<Value> = tuple
+        .into_iter()
+        .map(|v| v.expect("every position bound, checked above"))
+        .collect();
+
+    let mut goal = gix_query_parse::goal_from_predicate(key.name.clone(), key.arity, bound);
+    gix_query_parse::resolve_goal(&mut goal, checked.registry());
+
+    let repo_facts = RepoFacts::new(repo);
+    let combined = Layered::new(facts, &repo_facts);
+    let (rewritten, emitted, result) = run_checked_goal_full(repo, &combined, &checked, &goal)?;
 
     Ok(gix_query_eval::explain(
         &emitted,

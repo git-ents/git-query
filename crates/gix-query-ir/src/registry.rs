@@ -249,6 +249,33 @@ impl PredicateEntry {
         }
     }
 
+    /// A host-supplied, repo-backed predicate: the public counterpart of the
+    /// `edb(...)` helper [`host_predicates`] itself is built from.
+    ///
+    /// This is the seam a downstream consumer (`git-forge`, per
+    /// ARCHITECTURE.md's "extension-contributed predicates") uses to declare
+    /// its own base facts -- `cst_node/4`, `reviewed/1`, and the like -- with
+    /// the same knobs `host_predicates()` uses for `commit/1` and `verdict/2`:
+    /// name and arity (via `types`'s length), argument types, the
+    /// required-bound [`ArgSet`] that decides eager-vs-demand affordability
+    /// (`DEVPLAN.md` §0), the [`Backing`] sources that feed the cache key's
+    /// footprint digest, and one doc line for `git query predicates`.
+    /// Visibility is always [`Visibility::Public`], matching every host
+    /// predicate: an EDB relation is base data, never module-private.
+    /// [`Registry::insert_predicate`] rejects any attempt to redefine a name
+    /// already registered, host or otherwise, so a consumer cannot shadow
+    /// `commit/1` by accident.
+    #[must_use]
+    pub fn edb(
+        name: &'static str,
+        types: &[ValueType],
+        required_bound: ArgSet,
+        backing: Vec<Backing>,
+        doc: &'static str,
+    ) -> Self {
+        edb(name, types, required_bound, backing, doc)
+    }
+
     /// The ref globs this predicate reads, empty for a content-addressed,
     /// ad-hoc, or derived predicate.
     pub fn ref_globs(&self) -> impl Iterator<Item = &str> {

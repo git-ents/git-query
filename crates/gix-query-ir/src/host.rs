@@ -96,6 +96,69 @@ pub trait FactSource {
     ) -> Result<Facts<'a>, HostError>;
 }
 
+/// Two [`FactSource`]s composed into one, dispatching `provides`/`facts` by
+/// predicate key.
+///
+/// This is the seam a downstream consumer (`git-forge`) needs to query its
+/// own base facts -- its issue, review, and comment docs -- joined against
+/// the built-in repo facts: [`FactSource`] is a trait precisely so a
+/// consumer can supply its own implementation, and this type is what lets
+/// that implementation sit *beside* the host's (`gix-query-host`'s
+/// `RepoFacts`), rather than having to reimplement or wrap it. `gix-query`'s
+/// `run_goal_with`/`run_predicate_with`/`run_body_with` build one of these
+/// per call, layering the caller's [`FactSource`] over a fresh `RepoFacts`,
+/// so a caller never constructs one for that path; it stays public for the
+/// rarer case of a consumer composing more than one of its *own* sources
+/// (nest `Layered`; nothing here is limited to a pair) before handing the
+/// result to one of those entry points.
+///
+/// Both sides are trait objects rather than a second type parameter: the
+/// only place this is built is inside those entry points, over one local
+/// call-supplied source and one freshly stack-allocated `RepoFacts`, so
+/// there is no caller left to monomorphize for, and `Facts`/`run_eager`
+/// already take `&dyn FactSource` on the same reasoning.
+///
+/// **First-wins.** If both `first` and `second` claim the same key,
+/// `second` is never consulted for it -- `provides` short-circuits on
+/// `first`, and `facts` dispatches to whichever one of the two claimed it
+/// first. This mirrors [`Registry::insert_predicate`](crate::Registry::insert_predicate)'s
+/// own "base predicates are not redefinable" rule at the fact-source layer:
+/// an overlap is something to notice and resolve at registration time, not
+/// something this type silently merges or picks arbitrarily.
+#[derive(Clone, Copy)]
+pub struct Layered<'a> {
+    first: &'a dyn FactSource,
+    second: &'a dyn FactSource,
+}
+
+impl<'a> Layered<'a> {
+    /// Compose `first` and `second`, with `first` taking priority on any key
+    /// both claim.
+    #[must_use]
+    pub const fn new(first: &'a dyn FactSource, second: &'a dyn FactSource) -> Self {
+        Self { first, second }
+    }
+}
+
+impl FactSource for Layered<'_> {
+    fn provides(&self, key: &PredicateKey) -> bool {
+        self.first.provides(key) || self.second.provides(key)
+    }
+
+    fn facts<'a>(
+        &'a self,
+        key: &PredicateKey,
+        bound: Bindings<'_>,
+        attribute: bool,
+    ) -> Result<Facts<'a>, HostError> {
+        if self.first.provides(key) {
+            self.first.facts(key, bound, attribute)
+        } else {
+            self.second.facts(key, bound, attribute)
+        }
+    }
+}
+
 /// A moded, non-enumerable call.
 ///
 /// Builtins are called with bound inputs *inside* the fixpoint loop, which is
