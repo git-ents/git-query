@@ -25,7 +25,7 @@ use gix_query_ir::{Adornment, Builtin, FactSource, PredicateKey, Value};
 use crate::engine;
 use crate::error::EvalError;
 use crate::lower::{NemoProgram, NemoTables};
-use crate::rewrite::{DemandKind, RewrittenProgram};
+use crate::rewrite::{DemandKind, LoweredProgram};
 
 /// One answered call, recorded as it happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +113,7 @@ pub struct LoopResult {
 /// [`EvalError::DemandDidNotConverge`] if `max_rounds` is exhausted; anything
 /// [`crate::engine::run`] or a provider returns.
 pub fn run_to_fixpoint(
-    rewritten: &RewrittenProgram,
+    rewritten: &LoweredProgram,
     program: &NemoProgram,
     facts: &dyn FactSource,
     builtins: &dyn Builtin,
@@ -222,7 +222,7 @@ mod tests {
     use super::*;
     use crate::lower::NemoProgram;
     use crate::rewrite::rewrite;
-    use crate::testutil::{StubTable, edb_enumerable};
+    use crate::testutil::{StubTable, edb_enumerable, edb_required_bound};
     use gix_query_ir::{
         Atom, CheckedProgram, Goal, Literal, PredicateEntry, Program, Registry, Rule,
         RuleAdornments, Stratification, Term, Var, Visibility,
@@ -458,7 +458,7 @@ mod tests {
         // the first has been answered.
         let mut registry = Registry::host();
         edb_enumerable(&mut registry, "seed", 2);
-        edb_enumerable(&mut registry, "follows", 3);
+        edb_required_bound(&mut registry, "follows", 3, &[0]);
         for (name, arity) in [("q", 2), ("p", 1)] {
             registry
                 .insert_predicate(PredicateEntry::idb(
@@ -610,7 +610,7 @@ mod tests {
         // the first if the log were not a memo.
         let mut registry = Registry::host();
         edb_enumerable(&mut registry, "seed", 2);
-        edb_enumerable(&mut registry, "follows", 3);
+        edb_required_bound(&mut registry, "follows", 3, &[0]);
         for (name, arity) in [("q", 2), ("p", 1)] {
             registry
                 .insert_predicate(PredicateEntry::idb(

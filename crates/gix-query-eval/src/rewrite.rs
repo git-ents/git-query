@@ -49,6 +49,16 @@
 //! concrete bound tuple demanded at that point, from the guard (if any) and
 //! the literal prefix before it. A literal calling a host predicate never
 //! changes; only the magic collector is new.
+//!
+//! # The narrow cut (`DEVPLAN.md` §0)
+//!
+//! One exception to "non-empty adornment gets a magic collector": a call
+//! site whose predicate [`gix_query_ir::PredicateEntry::is_enumerable`] --
+//! the eight ref-glob EDB predicates -- never mints one, bound or not. Its
+//! whole extension is affordable to read once, so [`Builder::visit_literal`]
+//! routes it straight into [`LoweredProgram::eager`] instead, and the join
+//! that would have consumed the magic relation instead runs against the
+//! preloaded table directly.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -107,19 +117,20 @@ impl DemandSite {
 /// query jointly created, and the EDB predicates that must be loaded whole
 /// because some call site to them is unadorned.
 #[derive(Debug, Clone)]
-pub struct RewrittenProgram {
+pub struct LoweredProgram {
     /// Every generated rule, source rules included -- a source rule with no
     /// adorned head is carried through with an identity `body_map` and an
     /// empty guard, so this is always the complete program to lower.
     pub rules: Program,
     /// Every distinct demand site, in first-discovered order.
     pub demand: Vec<DemandSite>,
-    /// EDB predicates with at least one unadorned call site anywhere, and
-    /// therefore loaded in full, once, rather than through demand.
+    /// EDB predicates loaded in full, once, rather than through demand:
+    /// every enumerable predicate (`DEVPLAN.md` §0) touched anywhere, plus
+    /// any required-bound predicate called with an unadorned (fully free)
+    /// call site.
     ///
-    /// A predicate can be in both this set and have entries in `demand`: our
-    /// registry allows `member/1` to be called both free and bound, and nothing
-    /// stops one program from doing both.
+    /// An enumerable predicate never also appears as a [`DemandSite`] --
+    /// every call site to it, bound or free, lands here instead.
     pub eager: BTreeSet<PredicateKey>,
     /// The answer relation's key -- `magic_answer_<n>`, arity equal to the
     /// goal's `select` length -- so [`crate::engine`] knows what to read back.
@@ -201,6 +212,15 @@ fn bound_terms(atom: &Atom, adornment: &Adornment) -> Vec<SpannedTerm> {
         .filter(|(i, _)| adornment.bound.contains(*i))
         .map(|(_, t)| t.clone())
         .collect()
+}
+
+/// Whether `key` is a base predicate whose whole extension is affordable to
+/// read (`DEVPLAN.md` §0's narrow cut): the eight ref-glob EDB predicates,
+/// never a required-bound EDB predicate or an IDB predicate.
+fn is_enumerable(key: &PredicateKey, registry: &Registry) -> bool {
+    registry
+        .predicate(key)
+        .is_some_and(gix_query_ir::PredicateEntry::is_enumerable)
 }
 
 /// Classify a host-or-derived predicate for [`DemandSite::kind`].
@@ -299,6 +319,15 @@ impl<'a> Builder<'a> {
         };
         let key = atom.predicate.clone();
         let kind = classify(&key, self.registry);
+        if kind == DemandKind::Edb && is_enumerable(&key, self.registry) {
+            // Its whole extension is affordable to read once (`DEVPLAN.md`
+            // §0), so a call site here -- bound or not -- never needs a
+            // magic collector: eager preload already answers it, and a
+            // generated collector rule would just be Nemo work nobody reads
+            // back.
+            self.eager.insert(key);
+            return;
+        }
         let adornment = &self.demand_adornment(&key, kind, adornment);
         if !adornment.is_adorned() {
             if kind == DemandKind::Edb {
@@ -421,7 +450,7 @@ impl<'a> Builder<'a> {
 /// free, which is always sound (it just forgoes demand narrowing) and never
 /// unsound, so a missing entry degrades gracefully rather than panicking.
 #[must_use]
-pub fn rewrite(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
+pub fn rewrite(checked: &CheckedProgram, goal: &Goal) -> LoweredProgram {
     let mut builder = Builder::new(checked.registry());
 
     for (id, rule) in checked.program().rules().iter().enumerate() {
@@ -466,7 +495,7 @@ pub fn rewrite(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
         })
         .collect();
 
-    RewrittenProgram {
+    LoweredProgram {
         rules: program,
         demand,
         eager: builder.eager,
@@ -610,10 +639,10 @@ mod tests {
     #[test]
     fn an_unadorned_head_gets_no_guard() {
         // `active(M) :- member(M), !revoked(M)`: `active`'s head is free, so
-        // its own defining rule is never guarded. `member(M)` is called free
-        // (eager); `!revoked(M)` calls with `M` already bound by the literal
-        // before it -- negation always needs full binding, so that call site
-        // is a demand site regardless of `revoked`'s own enumerability.
+        // its own defining rule is never guarded. `member` and `revoked` are
+        // both ref-glob EDB predicates, hence enumerable -- every call site
+        // to either, including the negated one that needs `M` fully bound,
+        // is answered by eager preload, never a magic demand site.
         let mut f = Fixture::new();
         f.idb_free("active", 1);
         f.rule(
@@ -628,16 +657,13 @@ mod tests {
         let rewritten = rewrite(&checked, &goal);
 
         let revoked = PredicateKey::new("revoked", 1);
-        assert_eq!(
-            rewritten.demand.len(),
-            1,
-            "only the negated call should demand anything: {:?}",
+        assert!(
+            rewritten.demand.is_empty(),
+            "an enumerable EDB predicate is never demanded, bound or not: {:?}",
             rewritten.demand
         );
-        assert_eq!(rewritten.demand[0].base, revoked);
-        assert_eq!(rewritten.demand[0].kind, DemandKind::Edb);
         assert!(rewritten.eager.contains(&PredicateKey::new("member", 1)));
-        assert!(!rewritten.eager.contains(&revoked));
+        assert!(rewritten.eager.contains(&revoked));
 
         let active_rule = rewritten
             .rules
@@ -741,9 +767,10 @@ mod tests {
     }
 
     #[test]
-    fn an_edb_predicate_can_be_both_eager_and_demanded() {
+    fn an_enumerable_edb_predicate_is_eager_whether_called_free_or_bound() {
         // `member/1` legitimately called free in one rule and bound in
-        // another; both must be honored.
+        // another; both are answered by the same eager preload, and neither
+        // mints a magic demand site.
         let mut f = Fixture::new();
         f.idb_free("all_members", 1);
         f.idb_bound("is_member", 1, &[0]);
@@ -774,10 +801,9 @@ mod tests {
         let member = PredicateKey::new("member", 1);
         assert!(rewritten.eager.contains(&member));
         assert!(
-            rewritten
-                .demand
-                .iter()
-                .any(|d| d.base == member && d.kind == DemandKind::Edb)
+            rewritten.demand.iter().all(|d| d.base != member),
+            "an enumerable predicate never mints a demand site: {:?}",
+            rewritten.demand
         );
     }
 

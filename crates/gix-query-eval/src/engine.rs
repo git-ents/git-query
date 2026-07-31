@@ -298,7 +298,7 @@ mod tests {
             ),
             "test",
         );
-        let rewritten = crate::rewrite::RewrittenProgram {
+        let rewritten = crate::rewrite::LoweredProgram {
             rules: program,
             demand: Vec::new(),
             eager: std::iter::once(PredicateKey::new("member", 1)).collect(),

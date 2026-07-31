@@ -17,7 +17,7 @@ use gix_query_ir::{
     Rule, RuleOrigin, Span, SpannedTerm, Stratification, Term, Value, Var, Visibility,
 };
 
-use crate::rewrite::{RewrittenProgram, rewrite};
+use crate::rewrite::{LoweredProgram, rewrite};
 use crate::testutil::{StubTable, edb_enumerable};
 use crate::{NemoProgram, run_to_fixpoint};
 
@@ -684,7 +684,7 @@ fn bind_selects_the_maximum_confidence_not_the_lexicographically_greatest() {
 /// or a rule body touches is loaded eagerly, which is only affordable
 /// because this helper exists to test small programs, never to run one for
 /// real.
-fn unrewritten(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
+fn unrewritten(checked: &CheckedProgram, goal: &Goal) -> LoweredProgram {
     let mut program = Program::new();
     for rule in checked.program().rules() {
         program.push_rule(
@@ -748,7 +748,7 @@ fn unrewritten(checked: &CheckedProgram, goal: &Goal) -> RewrittenProgram {
         })
         .collect();
 
-    RewrittenProgram {
+    LoweredProgram {
         rules: program,
         demand: Vec::new(),
         eager,

@@ -32,7 +32,7 @@ use nemo::execution::tracing::trace::ExecutionTraceTree;
 use crate::engine;
 use crate::error::EvalError;
 use crate::lower::{NemoProgram, NemoTables};
-use crate::rewrite::RewrittenProgram;
+use crate::rewrite::LoweredProgram;
 
 /// One node of a derivation tree, reported over the rules an author wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +89,7 @@ pub struct NegationWitness {
 pub fn explain(
     program: &NemoProgram,
     tables: &NemoTables,
-    rewritten: &RewrittenProgram,
+    rewritten: &LoweredProgram,
     predicate: &PredicateKey,
     tuple: &[Value],
 ) -> Result<Option<DerivationTree>, EvalError> {
@@ -107,7 +107,7 @@ pub fn explain(
 /// built in the first place.
 fn convert(
     tree: &ExecutionTraceTree,
-    rewritten: &RewrittenProgram,
+    rewritten: &LoweredProgram,
 ) -> Result<Option<DerivationTree>, EvalError> {
     match tree {
         ExecutionTraceTree::Fact(atom) => {

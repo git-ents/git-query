@@ -18,7 +18,7 @@ use crate::demand::{CallLog, LoggedCall, LoopResult, bindings_from_demand};
 use crate::engine;
 use crate::error::EvalError;
 use crate::lower::{NemoProgram, NemoTables};
-use crate::rewrite::{DemandKind, RewrittenProgram};
+use crate::rewrite::{DemandKind, LoweredProgram};
 
 /// Run `rewritten` to a fixpoint, eagerly preloading every enumerable base
 /// predicate it touches instead of demanding it one bound call at a time.
@@ -34,7 +34,7 @@ use crate::rewrite::{DemandKind, RewrittenProgram};
 /// [`EvalError::DemandDidNotConverge`] if `max_rounds` is exhausted; anything
 /// [`crate::engine::run`] or a provider returns.
 pub fn run_eager(
-    rewritten: &RewrittenProgram,
+    rewritten: &LoweredProgram,
     program: &NemoProgram,
     registry: &Registry,
     facts: &dyn FactSource,

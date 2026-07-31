@@ -11,8 +11,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use gix_query_ir::{
-    Backing, Bindings, Builtin, Fact, FactSource, Facts, HostError, ModeSet, PredicateClass,
-    PredicateEntry, PredicateKey, Registry, TypeSlot, Value, Visibility,
+    Backing, Bindings, Builtin, Fact, FactSource, Facts, HostError, Mode, ModeSet, ModeVector,
+    PredicateClass, PredicateEntry, PredicateKey, Registry, TypeSlot, Value, Visibility,
 };
 
 /// Register `name/arity` as a fully-enumerable host predicate.
@@ -29,6 +29,34 @@ pub(crate) fn edb_enumerable(registry: &mut Registry, name: &str, arity: usize) 
             visibility: Visibility::Public,
             class: PredicateClass::Edb {
                 modes: ModeSet::enumerable(arity),
+                backing: vec![Backing::AdHoc],
+            },
+            doc: std::borrow::Cow::Borrowed(""),
+        })
+        .expect("insertable");
+}
+
+/// Register `name/arity` as a required-bound host predicate -- the five
+/// `commit`/`parent`/`tree_entry`/`author`/`line`-shaped EDB predicates that
+/// stay behind the demand loop under `DEVPLAN.md` §0's narrow cut, never
+/// eagerly preloaded.
+pub(crate) fn edb_required_bound(
+    registry: &mut Registry,
+    name: &str,
+    arity: usize,
+    bound: &[usize],
+) {
+    let mut modes = vec![Mode::Free; arity];
+    for &pos in bound {
+        modes[pos] = Mode::Bound;
+    }
+    registry
+        .insert_predicate(PredicateEntry {
+            key: PredicateKey::new(name, arity),
+            types: vec![TypeSlot::Infer; arity],
+            visibility: Visibility::Public,
+            class: PredicateClass::Edb {
+                modes: ModeSet::new(vec![ModeVector::new(modes)]),
                 backing: vec![Backing::AdHoc],
             },
             doc: std::borrow::Cow::Borrowed(""),

@@ -444,7 +444,7 @@ fn run_checked_goal_full(
     goal: &gix_query_ir::Goal,
 ) -> Result<
     (
-        gix_query_eval::RewrittenProgram,
+        gix_query_eval::LoweredProgram,
         gix_query_eval::NemoProgram,
         gix_query_eval::LoopResult,
     ),

@@ -69,8 +69,6 @@ pub use demand::{CallLog, LoggedCall, LoopResult, run_to_fixpoint};
 pub use eager::run_eager;
 pub use error::EvalError;
 pub use lower::{NemoProgram, NemoTables};
-pub use rewrite::{
-    DemandKind, DemandSite, RewrittenProgram, adorn_body, rewrite as rewrite_program,
-};
+pub use rewrite::{DemandKind, DemandSite, LoweredProgram, adorn_body, rewrite as rewrite_program};
 pub use symbol::Symbol;
 pub use trace::{DerivationTree, NegationWitness, explain};

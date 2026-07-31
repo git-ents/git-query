@@ -14,7 +14,7 @@ use nemo::datavalues::{AnyDataValue, DataValue};
 
 use crate::engine::{relation, run, value_from_nemo};
 use crate::lower::{NemoProgram, NemoTables};
-use crate::rewrite::RewrittenProgram;
+use crate::rewrite::LoweredProgram;
 use gix_query_ir::{Atom, Literal, PredicateKey, Program, Rule, Term, Value};
 
 #[test]
@@ -28,7 +28,7 @@ fn every_symbol_we_emit_is_quoted_never_a_bare_identifier() {
         Rule::fact(Atom::new("out", vec![Term::sym("same")])),
         "conformance",
     );
-    let rewritten = RewrittenProgram {
+    let rewritten = LoweredProgram {
         rules: program,
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),
@@ -65,7 +65,7 @@ fn an_anonymous_body_term_is_accepted_by_nemos_own_parser() {
         ),
         "conformance",
     );
-    let rewritten = RewrittenProgram {
+    let rewritten = LoweredProgram {
         rules: program,
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),
@@ -274,7 +274,7 @@ fn a_predicate_defined_by_both_a_ground_fact_and_a_rule_is_a_nemo_storage_bug() 
         ),
         "t",
     );
-    let rewritten = RewrittenProgram {
+    let rewritten = LoweredProgram {
         rules: program,
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),
@@ -328,7 +328,7 @@ fn two_rules_with_an_identical_ground_body_but_different_heads_both_derive() {
         ),
         "conformance",
     );
-    let rewritten = RewrittenProgram {
+    let rewritten = LoweredProgram {
         rules: program,
         demand: Vec::new(),
         eager: std::collections::BTreeSet::new(),

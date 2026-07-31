@@ -28,7 +28,7 @@ use std::fmt;
 use gix_query_ir::{Atom, Literal, PredicateKey, Rule, Term, Value};
 
 use crate::error::EvalError;
-use crate::rewrite::RewrittenProgram;
+use crate::rewrite::LoweredProgram;
 use crate::symbol::Symbol;
 
 /// Validated Nemo program text, built only from [`gix_query_ir::Rule`]s that
@@ -58,7 +58,7 @@ impl NemoProgram {
     ///
     /// # Errors
     /// Fails if any constant along the way contains a `"`.
-    pub fn emit(program: &RewrittenProgram) -> Result<Self, EvalError> {
+    pub fn emit(program: &LoweredProgram) -> Result<Self, EvalError> {
         let rules = program.rules.rules();
         let mut text = String::new();
         let mut rule_signatures = Vec::new();
@@ -315,7 +315,7 @@ mod tests {
         ))
     }
 
-    fn trivial_rewritten() -> RewrittenProgram {
+    fn trivial_rewritten() -> LoweredProgram {
         let mut registry = Registry::host();
         registry
             .insert_predicate(PredicateEntry::idb(
