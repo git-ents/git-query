@@ -204,7 +204,7 @@ impl<'r> EffectStore<'r> {
     /// [`Error::Store`] if the read fails.
     pub fn get(&self, name: &str) -> Result<Option<EffectDoc>, Error> {
         let path = RefPath::from(RefSegment::new(name)?);
-        Ok(self.kind().get(&path)?)
+        Ok(self.kind().read(&path)?.value())
     }
 
     /// Every currently defined effect's doc.
@@ -217,7 +217,8 @@ impl<'r> EffectStore<'r> {
             .into_iter()
             .map(|path| {
                 self.kind()
-                    .get(&path)?
+                    .read(&path)?
+                    .value()
                     .ok_or_else(|| unreachable!("`list` only returns names with a current value"))
             })
             .collect()

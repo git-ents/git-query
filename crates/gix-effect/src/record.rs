@@ -362,7 +362,7 @@ impl<'r> RecordStore<'r> {
     /// otherwise a store failure.
     pub fn get(&self, key: &str) -> Result<Option<TransitionRecord>, RecordError> {
         let path = RefPath::from(RefSegment::new(key)?);
-        Ok(self.kind().get(&path)?)
+        Ok(self.kind().read(&path)?.value())
     }
 
     /// Record `record` under `key` (hex), unless a record already exists
@@ -398,7 +398,8 @@ impl<'r> RecordStore<'r> {
             .into_iter()
             .map(|path| {
                 self.kind()
-                    .get(&path)?
+                    .read(&path)?
+                    .value()
                     .ok_or_else(|| unreachable!("`list` only returns names with a current value"))
             })
             .collect()

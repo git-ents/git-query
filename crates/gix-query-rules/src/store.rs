@@ -73,7 +73,7 @@ impl<'r> RuleStore<'r> {
     /// been published.
     pub fn get(&self, name: &str) -> Result<Option<String>, Error> {
         let name = RefPath::from(RefSegment::new(name)?);
-        Ok(self.kind().get(&name)?.map(|record| record.source))
+        Ok(self.kind().read(&name)?.value().map(|record| record.source))
     }
 
     /// Every published module name, sorted.

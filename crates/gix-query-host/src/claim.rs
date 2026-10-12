@@ -144,11 +144,11 @@ impl<'r> ClaimReader<'r> {
         let kind = self.kind();
         let claims = self.claims();
         let mut out = Vec::new();
-        for name in kind.list().map_err(|e| backend(&self.key, e))? {
-            let Some(tip) = kind.get(&name).map_err(|e| backend(&self.key, e))? else {
+        for (name, tip) in kind.list_entries().map_err(|e| backend(&self.key, e))? {
+            let Ok(envelope) = claims.envelope_at(tip) else {
                 continue;
             };
-            let Some(target) = self.chain_target(tip)? else {
+            let Some(target) = self.chain_target(envelope)? else {
                 continue;
             };
             // A ref whose leaf is not the target key of the claims on it is

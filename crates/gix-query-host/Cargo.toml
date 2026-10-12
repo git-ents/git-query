@@ -11,7 +11,7 @@ gix-anchor = { git = "https://github.com/git-ents/git-anchor.git" }
 # would pull half-finished work into this crate's claim EDB on every lockfile
 # refresh. The rev is attest's Phase-1+2 completion -- the commit whose
 # consumer contract `claim.rs` is written against.
-gix-attest = { git = "https://github.com/git-ents/git-anchor.git", rev = "b96013e8d08071c7d602d23cc8d7a452fcafa64c" }
+gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
 gix-store = { git = "https://github.com/git-ents/git-store.git" }
 # `AsOfRefStore`, not re-exported by `gix-store`: the read-only overlay
 # `RepoFacts::as_of` is built on (`refs.rs`). Same repo as `gix-store`, so the

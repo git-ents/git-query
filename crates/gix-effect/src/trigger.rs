@@ -297,7 +297,7 @@ impl<'r> IntentStore<'r> {
     /// # Errors
     /// A store read failure.
     pub fn get(&self, path: &RefPath) -> Result<Option<Intent>, IntentError> {
-        Ok(self.kind().get(path)?)
+        Ok(self.kind().read(path)?.value())
     }
 
     /// Every currently outstanding intent targeting `target_ref`.

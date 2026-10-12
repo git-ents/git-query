@@ -9,7 +9,7 @@ gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-
 # The claim fixture writes real signed claims through the real crates, so a
 # test never asserts against a hand-rolled imitation of a claim. Pinned to the
 # same rev `gix-query-host` names, so fixture and reader cannot disagree.
-gix-attest = { git = "https://github.com/git-ents/git-anchor.git", rev = "b96013e8d08071c7d602d23cc8d7a452fcafa64c" }
+gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
 gix-store = { git = "https://github.com/git-ents/git-store.git" }
 facet = { version = "0.50.0-rc.0", features = ["reflect"] }
 

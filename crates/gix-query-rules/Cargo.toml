@@ -10,7 +10,7 @@ gix-query-ir = { path = "../gix-query-ir" }
 gix-query-parse = { path = "../gix-query-parse" }
 gix-query-check = { path = "../gix-query-check" }
 gix-store = { git = "https://github.com/git-ents/git-store.git" }
-facet-git-tree = { git = "https://github.com/git-ents/git-store.git" }
+facet-git-tree = "0.1.0-alpha.1"
 facet-value = "0.50.0-rc.5"
 facet-format = "0.50.0-rc.5"
 gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
