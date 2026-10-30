@@ -15,30 +15,30 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-gix-query-ir = { path = "../gix-query-ir" }
-gix-query-parse = { path = "../gix-query-parse" }
-gix-query-check = { path = "../gix-query-check" }
-gix-query-eval = { path = "../gix-query-eval" }
-gix-query-host = { path = "../gix-query-host" }
-gix-query-rules = { path = "../gix-query-rules" }
-gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
+gix-query-ir = { workspace = true }
+gix-query-parse = { workspace = true }
+gix-query-check = { workspace = true }
+gix-query-eval = { workspace = true }
+gix-query-host = { workspace = true }
+gix-query-rules = { workspace = true }
+gix = { workspace = true }
 # `RefName`, for `run_body_as_of`'s override-set type -- the same as-of seam
 # `gix-query-host::RepoFacts::as_of` is built on. Not a new capability this
 # crate reaches into the repository with: `RefName` is a validated string,
 # nothing more, and evaluation itself still runs entirely through
 # `gix-query-host`.
-gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
-thiserror = "2"
+gix-refstore = { workspace = true }
+thiserror = { workspace = true }
 # The cache key's hash function (`DEVPLAN.md` §1.1, Phase 6). Not a new trust
 # boundary: sha2 is already several dependencies deep in this workspace.
-sha2 = "0.10"
+sha2 = { workspace = true }
 # CLI-only: the `git query` binary's argument parsing and error reporting.
 # Absent unless the default `cli` feature is on, so a consumer can depend on
 # the library alone.
-anyhow = { version = "1", optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
+anyhow = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 [dev-dependencies]
-test-support = { path = "../test-support" }
-rstest = "0.26"
-tempfile = "3"
+test-support = { workspace = true }
+rstest = { workspace = true }
+tempfile = { workspace = true }

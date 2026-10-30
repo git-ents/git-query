@@ -6,23 +6,16 @@ license = "MIT OR Apache-2.0"
 description = "Repo-backed fact sources and the projection builtins for git-query."
 
 [dependencies]
-gix-anchor = { git = "https://github.com/git-ents/git-anchor.git" }
-# Pinned: `git-anchor` is under active development, and an unpinned git dep
-# would pull half-finished work into this crate's claim EDB on every lockfile
-# refresh. The rev is attest's Phase-1+2 completion -- the commit whose
-# consumer contract `claim.rs` is written against.
-gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
-gix-store = { git = "https://github.com/git-ents/git-store.git" }
-# `AsOfRefStore`, not re-exported by `gix-store`: the read-only overlay
-# `RepoFacts::as_of` is built on (`refs.rs`). Same repo as `gix-store`, so the
-# two move together under one `cargo update`.
-gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
-facet = { version = "0.50.0-rc.0", features = ["reflect"] }
-gix-query-ir = { path = "../gix-query-ir" }
-gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision", "blob-diff"] }
-thiserror = "2"
+gix-anchor = { workspace = true }
+gix-attest = { workspace = true }
+gix-store = { workspace = true }
+gix-refstore = { workspace = true }
+facet = { workspace = true }
+gix-query-ir = { workspace = true }
+gix = { workspace = true, features = ["blob-diff"] }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-test-support = { path = "../test-support" }
-rstest = "0.26"
-tempfile = "3"
+test-support = { workspace = true }
+rstest = { workspace = true }
+tempfile = { workspace = true }

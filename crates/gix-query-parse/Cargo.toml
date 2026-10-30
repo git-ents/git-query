@@ -6,9 +6,9 @@ license = "MIT OR Apache-2.0"
 description = "Text to IR for the git-query Datalog dialect, plus the pretty-printer."
 
 [dependencies]
-gix-query-ir = { path = "../gix-query-ir" }
-thiserror = "2"
+gix-query-ir = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-proptest = "1"
-rstest = "0.26"
+proptest = { workspace = true }
+rstest = { workspace = true }

@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "The intermediate representation, signature registry, and traits every other git-query crate codes against."
 
 [dependencies]
-thiserror = "2"
+thiserror = { workspace = true }
 
 [dev-dependencies]
-rstest = "0.26"
+rstest = { workspace = true }

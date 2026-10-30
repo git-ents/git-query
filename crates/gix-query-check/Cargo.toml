@@ -6,9 +6,9 @@ license = "MIT OR Apache-2.0"
 description = "The nine validation passes: resolution, types, range restriction, stratification, caps, footprints, modes, minting confinement."
 
 [dependencies]
-gix-query-ir = { path = "../gix-query-ir" }
-thiserror = "2"
+gix-query-ir = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-gix-query-parse = { path = "../gix-query-parse" }
-rstest = "0.26"
+gix-query-parse = { workspace = true }
+rstest = { workspace = true }

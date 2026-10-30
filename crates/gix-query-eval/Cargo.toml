@@ -9,22 +9,20 @@ description = "The magic-set rewrite, the Nemo lowering, the demand loop over ho
 publish = false
 
 [dependencies]
-gix-query-ir = { path = "../gix-query-ir" }
-thiserror = "2"
-async-trait = "0.1"
-# Pinned to an exact commit, never a branch: a version bump is a semantics
-# change and goes through the upgrade audit in CONTRIBUTING.md.
-nemo = { git = "https://github.com/knowsys/nemo", rev = "4415bc2e180adf33a7a4b98ddc41be9914b7584e" }
-nemo-physical = { git = "https://github.com/knowsys/nemo", rev = "4415bc2e180adf33a7a4b98ddc41be9914b7584e" }
-tokio = { version = "1", features = ["rt"] }
+gix-query-ir = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+nemo = { workspace = true }
+nemo-physical = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 # Test-only: builds real CheckedPrograms so fixtures exercise the actual
 # nine passes rather than a hand-rolled stand-in. Never a normal dependency --
 # gix-query-check has no reason to know this crate exists, and this crate's
 # own code never calls it; only its test modules do.
-gix-query-check = { path = "../gix-query-check" }
-gix-query-parse = { path = "../gix-query-parse" }
-proptest = "1"
-rstest = "0.26"
-tokio = { version = "1", features = ["rt", "macros"] }
+gix-query-check = { workspace = true }
+gix-query-parse = { workspace = true }
+proptest = { workspace = true }
+rstest = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }

@@ -16,3 +16,57 @@ members = [
 # suite. See DEVPLAN.md 2.11.
 exclude = ["spikes/nemo-spike"]
 resolver = "3"
+
+[workspace.dependencies]
+# Internal crates.
+gix-query-ir = { path = "crates/gix-query-ir" }
+gix-query-parse = { path = "crates/gix-query-parse" }
+gix-query-check = { path = "crates/gix-query-check" }
+gix-query-eval = { path = "crates/gix-query-eval" }
+gix-query-host = { path = "crates/gix-query-host" }
+gix-query-rules = { path = "crates/gix-query-rules" }
+# Consumption is library-only: `git-effect` sets `default-features = false` to
+# keep the `git query` CLI out of its graph, which Cargo requires be declared
+# on the workspace entry rather than the inheriting dependency.
+git-query = { path = "crates/git-query", default-features = false }
+test-support = { path = "crates/test-support" }
+
+# Third-party.
+anyhow = "1"
+ascent = "0.8"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+facet = { version = "0.50.0-rc.0", features = ["reflect"] }
+facet-format = "0.50.0-rc.5"
+facet-git-tree = "0.1.0-alpha.1"
+facet-value = "0.50.0-rc.5"
+gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
+proptest = "1"
+rstest = "0.26"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = "1"
+toml = "0.8"
+
+# Git dependencies.
+gix-anchor = { git = "https://github.com/git-ents/git-anchor.git" }
+# Pinned: `git-anchor` is under active development, and an unpinned git dep
+# would pull half-finished work into this crate's claim EDB on every lockfile
+# refresh. The rev is attest's Phase-1+2 completion -- the commit whose
+# consumer contract `claim.rs` is written against. Shared by `gix-query-host`,
+# `test-support`, and `git-effect`, whose Action schema (D7) is attested
+# through this crate's envelope.
+gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
+gix-store = { git = "https://github.com/git-ents/git-store.git" }
+# `AsOfRefStore`, not re-exported by `gix-store`: the read-only overlay
+# `RepoFacts::as_of` is built on (`refs.rs`). Same repo as `gix-store`, so the
+# two move together under one `cargo update`.
+gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
+# Nemo is a git dependency because it is not published, and crates.io refuses
+# any crate carrying one. Pinned to an exact commit, never a branch: a version
+# bump is a semantics change and goes through the upgrade audit in
+# CONTRIBUTING.md. See DEVPLAN.md 2.11.
+nemo = { git = "https://github.com/knowsys/nemo", rev = "4415bc2e180adf33a7a4b98ddc41be9914b7584e" }
+nemo-physical = { git = "https://github.com/knowsys/nemo", rev = "4415bc2e180adf33a7a4b98ddc41be9914b7584e" }

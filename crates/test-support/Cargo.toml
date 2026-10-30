@@ -5,13 +5,14 @@ edition = "2024"
 publish = false
 
 [dependencies]
-gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
+gix = { workspace = true }
 # The claim fixture writes real signed claims through the real crates, so a
-# test never asserts against a hand-rolled imitation of a claim. Pinned to the
-# same rev `gix-query-host` names, so fixture and reader cannot disagree.
-gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
-gix-store = { git = "https://github.com/git-ents/git-store.git" }
-facet = { version = "0.50.0-rc.0", features = ["reflect"] }
+# test never asserts against a hand-rolled imitation of a claim. Shares the
+# `gix-attest` pin `gix-query-host` names, so fixture and reader cannot
+# disagree.
+gix-attest = { workspace = true }
+gix-store = { workspace = true }
+facet = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

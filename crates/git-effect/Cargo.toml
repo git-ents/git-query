@@ -15,27 +15,24 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-git-query = { path = "../git-query", default-features = false }
-gix-query-ir = { path = "../gix-query-ir" }
-gix-query-parse = { path = "../gix-query-parse" }
-gix-store = { git = "https://github.com/git-ents/git-store.git" }
-gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
-facet-git-tree = "0.1.0-alpha.1"
-# Pinned, same rev `gix-query-host`/`test-support` name: the Action schema
-# (D7) is attested through this crate's envelope, and its consumer contract
-# must not drift out from under git-effect on an unrelated lockfile refresh.
-gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
-facet = { version = "0.50.0-rc.0", features = ["reflect"] }
-gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
-thiserror = "2"
+git-query = { workspace = true }
+gix-query-ir = { workspace = true }
+gix-query-parse = { workspace = true }
+gix-store = { workspace = true }
+gix-refstore = { workspace = true }
+facet-git-tree = { workspace = true }
+gix-attest = { workspace = true }
+facet = { workspace = true }
+gix = { workspace = true }
+thiserror = { workspace = true }
 # CLI-only: the `git effect` binary's argument parsing, error reporting, and
 # the TOML shape it parses its `define` doc from. The library stays free of
 # all four, per `DEVPLAN-effect.md`'s dependency list.
-anyhow = { version = "1", optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-toml = { version = "0.8", optional = true }
+anyhow = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
-test-support = { path = "../test-support" }
-tempfile = "3"
+test-support = { workspace = true }
+tempfile = { workspace = true }
