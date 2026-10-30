@@ -12,8 +12,8 @@
 //! is no path from an [`Executor`]'s output to a written claim that skips
 //! the check.
 
+use git_query::Namespace;
 use gix::objs::{Find, Write};
-use gix_query::Namespace;
 use gix_store::{Committer, RefStore};
 
 use crate::doc::{EffectDoc, Then};
@@ -98,7 +98,7 @@ pub enum RunError {
     /// Evaluating the gate, or resolving the effect's write namespaces,
     /// failed.
     #[error(transparent)]
-    Query(#[from] gix_query::QueryError),
+    Query(#[from] git_query::QueryError),
     /// Hashing the action key failed.
     #[error(transparent)]
     NormalForm(#[from] facet_git_tree::NormalFormError),
@@ -126,14 +126,14 @@ pub enum RunError {
 /// Whether `effect`'s `gate` currently derives at least one row -- D6/D7's
 /// authorization check: "check authorization (claims + gate rules, itself a
 /// query)." The gate is rule-language source like any other body, evaluated
-/// the same way `when` is ([`gix_query::run_body`]), so authorization is
+/// the same way `when` is ([`git_query::run_body`]), so authorization is
 /// decided by the rule this crate evaluates, never by policy this crate
 /// hardcodes.
 ///
 /// # Errors
 /// [`RunError::Query`] if the gate fails to parse or validate.
 pub fn authorized(repo: &gix::Repository, effect: &EffectDoc) -> Result<bool, RunError> {
-    Ok(!gix_query::run_body(repo, &effect.gate)?.is_empty())
+    Ok(!git_query::run_body(repo, &effect.gate)?.is_empty())
 }
 
 fn writes_of(effect: &EffectDoc) -> Vec<Namespace> {

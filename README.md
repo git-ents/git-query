@@ -53,11 +53,11 @@ Body literals are evaluated in author order, which fixes the sideways-informatio
 | [`gix-query-host`](crates/gix-query-host) | repo-backed fact sources and the projection builtins |
 | [`gix-query-rules`](crates/gix-query-rules) | rule-module storage, whole-program assembly, the cache key |
 | [`gix-query-kernel`](crates/gix-query-kernel) | the frozen compiled denial rules, and the differential test oracle |
-| [`gix-query`](crates/gix-query) | the library surface, plus the footprint and acyclicity export |
-| [`git-query`](crates/git-query) | the one binary, `git query` |
+| [`git-query`](crates/git-query) | the library surface — footprint and acyclicity export — plus the `git query` binary |
+| [`git-effect`](crates/git-effect) | the effect doc, trigger detection, the executor seam, and the transition log, plus the `git effect` binary |
 
-`gix-*` is a library and `git-*` is a binary, with no exceptions.
-There is one `git-*` crate in this workspace and there will not be a second: `explain` and `rules` are subcommands.
+A `git-*` crate is a library plus its own `git <name>` external subcommand, gated behind a default-on `cli` feature so a consumer can take the library alone; the internal `gix-query-*` crates stay libraries.
+`explain` and `rules` are subcommands of `git query`, not binaries of their own.
 
 See [`docs/query-and-rules.adoc`](docs/query-and-rules.adoc) for the normative specification.
 

@@ -64,7 +64,7 @@ impl<'r> RepoFacts<'r> {
     /// `anchor`) as it would answer if every name in `overrides` held the
     /// value given there instead of its real one.
     ///
-    /// This is the seam `gix-effect`'s trigger detection (`DEVPLAN-effect.md`
+    /// This is the seam `git-effect`'s trigger detection (`DEVPLAN-effect.md`
     /// D3) evaluates "at old" through, in place of rewinding and restoring a
     /// real ref: the repository is read, never written, to answer what a
     /// `when` body would have derived before a ref moved. Content-addressed

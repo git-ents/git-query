@@ -103,7 +103,7 @@ merits: an admission decision should not turn on a best-scoring-window heuristic
 . a result ref name is a function of the trigger tuple.
 --
 * Only the first is an analysis problem, and only the first lives here. The
-  acyclicity check is exported over footprints -- `gix-query`'s
+  acyclicity check is exported over footprints -- `git-query`'s
   `check_effect_acyclicity`, taking registered effect declarations plus their
   body source and returning a cycle diagnostic that names the offending
   namespace, so an effect that would read its own write set is rejected when it

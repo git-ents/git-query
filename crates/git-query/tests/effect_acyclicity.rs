@@ -1,4 +1,4 @@
-//! The exported fork-bomb check, exercised the way `gix-effect` will call it
+//! The exported fork-bomb check, exercised the way `git-effect` will call it
 //! at `git effect define` time: a set of registered effect declarations, each
 //! with the rule-language bodies whose footprints are its read set.
 //!
@@ -6,7 +6,7 @@
 //! `CheckedProgram` and a registry, which is exactly why it can run before
 //! anything is written.
 
-use gix_query::{
+use git_query::{
     EffectCheckError, EffectDecl, EffectUnderCheck, Namespace, check_effect_acyclicity,
 };
 use gix_query_ir::{Program, Registry};

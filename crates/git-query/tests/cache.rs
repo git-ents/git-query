@@ -6,7 +6,7 @@
 //! Nemo's `execute()` enters a process-global timing mutex; run this file
 //! with `--test-threads=1`.
 
-use gix_query::{QueryCache, RuleStore, Value};
+use git_query::{QueryCache, RuleStore, Value};
 use test_support::Fixture;
 
 fn repo_with_module() -> (tempfile::TempDir, gix::Repository, String, String) {
@@ -46,7 +46,7 @@ fn cached_and_cold_runs_agree_on_the_whole_corpus() {
 
     let cold: Vec<Vec<Vec<Value>>> = queries
         .iter()
-        .map(|q| gix_query::run_body(&repo, q).unwrap_or_else(|e| panic!("{q}: {e}")))
+        .map(|q| git_query::run_body(&repo, q).unwrap_or_else(|e| panic!("{q}: {e}")))
         .collect();
 
     // First pass through a fresh cache: every query misses and primes an
@@ -55,7 +55,7 @@ fn cached_and_cold_runs_agree_on_the_whole_corpus() {
     let primed: Vec<Vec<Vec<Value>>> = queries
         .iter()
         .map(|q| {
-            gix_query::run_body_cached(&repo, q, &cache).unwrap_or_else(|e| panic!("{q}: {e}"))
+            git_query::run_body_cached(&repo, q, &cache).unwrap_or_else(|e| panic!("{q}: {e}"))
         })
         .collect();
     assert_eq!(
@@ -72,7 +72,7 @@ fn cached_and_cold_runs_agree_on_the_whole_corpus() {
     let served: Vec<Vec<Vec<Value>>> = queries
         .iter()
         .map(|q| {
-            gix_query::run_body_cached(&repo, q, &cache).unwrap_or_else(|e| panic!("{q}: {e}"))
+            git_query::run_body_cached(&repo, q, &cache).unwrap_or_else(|e| panic!("{q}: {e}"))
         })
         .collect();
     assert_eq!(
@@ -94,7 +94,7 @@ fn a_ref_moving_between_two_calls_invalidates_the_cache_entry() {
     let repo = f.open();
     let cache = QueryCache::new();
 
-    let before = gix_query::run_body_cached(&repo, "member(M)", &cache).expect("runs");
+    let before = git_query::run_body_cached(&repo, "member(M)", &cache).expect("runs");
     assert!(before.is_empty(), "no member ref exists yet");
     assert_eq!(cache.len(), 1);
 
@@ -104,7 +104,7 @@ fn a_ref_moving_between_two_calls_invalidates_the_cache_entry() {
     let target = f.commit_file("members.txt", "Ada\n", "add Ada");
     f.update_ref(&format!("refs/meta/members/{member}"), &target);
 
-    let after = gix_query::run_body_cached(&repo, "member(M)", &cache).expect("runs");
+    let after = git_query::run_body_cached(&repo, "member(M)", &cache).expect("runs");
     assert_eq!(
         after,
         vec![vec![Value::sym(member.as_str())]],
@@ -130,7 +130,7 @@ fn publishing_a_rule_module_invalidates_every_entry_even_content_addressed_ones(
     let cache = QueryCache::new();
 
     let goal = format!("commit(\"{first}\")");
-    gix_query::run_body_cached(&repo, &goal, &cache).expect("runs");
+    git_query::run_body_cached(&repo, &goal, &cache).expect("runs");
     assert_eq!(cache.len(), 1);
 
     RuleStore::open(&repo)
@@ -141,7 +141,7 @@ fn publishing_a_rule_module_invalidates_every_entry_even_content_addressed_ones(
         )
         .expect("put module");
 
-    gix_query::run_body_cached(&repo, &goal, &cache).expect("runs");
+    git_query::run_body_cached(&repo, &goal, &cache).expect("runs");
     assert_eq!(
         cache.len(),
         2,
@@ -161,14 +161,14 @@ fn the_uncached_entry_points_never_consult_a_cache() {
     f.commit("first");
     let repo = f.open();
 
-    let before = gix_query::run_body(&repo, "member(M)").expect("runs");
+    let before = git_query::run_body(&repo, "member(M)").expect("runs");
     assert!(before.is_empty());
 
     let member = f.hash_object("Ada Lovelace <ada@example.com>");
     let target = f.commit_file("members.txt", "Ada\n", "add Ada");
     f.update_ref(&format!("refs/meta/members/{member}"), &target);
 
-    let after = gix_query::run_body(&repo, "member(M)").expect("runs");
+    let after = git_query::run_body(&repo, "member(M)").expect("runs");
     assert_eq!(
         after,
         vec![vec![Value::sym(member.as_str())]],

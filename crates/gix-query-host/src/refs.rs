@@ -10,7 +10,7 @@
 //! one type is what makes [`crate::facts::RepoFacts::as_of`] possible at
 //! all: an [`AsOfRefStore`] decorator answers every ref read in the crate
 //! the same way, rather than three call sites each growing their own
-//! override plumbing -- and it is `gix-effect`'s replacement for rewinding
+//! override plumbing -- and it is `git-effect`'s replacement for rewinding
 //! and restoring a real ref to answer "as it was before this ref moved"
 //! (see that crate's `trigger.rs`, and `../git-store`'s `as_of.rs` doc
 //! comment for why mutating the repository to answer a read is wrong in the

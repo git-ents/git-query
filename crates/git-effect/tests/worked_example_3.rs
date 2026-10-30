@@ -36,7 +36,7 @@
 //! proves the graph terminates because `refs/release/candidate` is written
 //! but appears in no trigger's read set.
 
-use gix_effect::{
+use git_effect::{
     Action, ActionKey, EffectDoc, EffectStore, ExecError, Executor, Param, RecordStore, Then,
     Transition, TriggerDetector, fire_advance, fire_run,
 };
@@ -111,7 +111,7 @@ fn the_chain_fires_end_to_end_and_stratification_proves_it_terminates() {
     // record's claim once it is a claim `Claims::verify` actually accepts.
     let claims_fixture = ClaimFixture::new(&fixture);
     let store = claims_fixture.store();
-    gix_effect::register_action_schema(&store).unwrap();
+    git_effect::register_action_schema(&store).unwrap();
 
     // Defining both effects together is C4's acyclicity check, run as
     // `EffectStore::define`'s validation pass: `build_on_push` writes
@@ -198,7 +198,7 @@ fn the_chain_fires_end_to_end_and_stratification_proves_it_terminates() {
         inputs: vec![],
         params: Vec::<Param>::new(),
     };
-    let target = gix_effect::action_target(&action_key).unwrap();
+    let target = git_effect::action_target(&action_key).unwrap();
     let claims = gix_attest::Claims::open(&store);
     let claim_ref = claims.reference(&target).unwrap();
     let claim_commit = repo
@@ -287,14 +287,14 @@ fn a_write_back_into_the_own_trigger_namespace_is_rejected_as_a_cycle() {
     let mut cyclic = release_on_green();
     cyclic.writes.push("refs/claims/*".to_owned());
     let err = effects.define(cyclic).unwrap_err();
-    let gix_effect::Error::Invalid { name, errors } = err else {
+    let git_effect::Error::Invalid { name, errors } = err else {
         panic!("expected Error::Invalid, got {err:?}");
     };
     assert_eq!(name, "release_on_green");
     assert!(
         errors
             .iter()
-            .any(|e| matches!(e, gix_query::EffectCheckError::Cycle { .. })),
+            .any(|e| matches!(e, git_query::EffectCheckError::Cycle { .. })),
         "expected a Cycle diagnostic, got {errors:?}"
     );
 }

@@ -1,4 +1,4 @@
-//! `gix-effect`: the effect doc, trigger detection, intents, idempotence keys,
+//! `git-effect`: the effect doc, trigger detection, intents, idempotence keys,
 //! and the transition log.
 //!
 //! `DEVPLAN-effect.md` Part B:
@@ -16,9 +16,9 @@
 //!
 //! What this crate calls rather than reimplements, per D9: rule-language
 //! parsing and validation (`gix-query-parse`/`gix-query-check`, through the
-//! `gix-query` facade), the acyclicity check and footprint-to-namespace
-//! projection (`gix_query::check_effect_acyclicity`/`body_read_namespaces`,
-//! C4), evaluation (`gix_query::run_goal`/`run_body`, Nemo through the
+//! `git-query` facade), the acyclicity check and footprint-to-namespace
+//! projection (`git_query::check_effect_acyclicity`/`body_read_namespaces`,
+//! C4), evaluation (`git_query::run_goal`/`run_body`, Nemo through the
 //! facade -- never `gix-query-eval` directly), typed-doc storage, ref CAS,
 //! and hashing/normal form (`gix-store`/`facet-git-tree`), and the claim
 //! envelope, signing, and verification (`gix-attest`, called for

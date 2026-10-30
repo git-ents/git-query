@@ -3,7 +3,7 @@
 //! Tier 1 (`run <predicate> --bind …`), tier 3 (`run --goal … --select …`),
 //! `predicates`, `rule add|list|check`, and tier 1's `explain` are wired up.
 //! Tier 2 and tier 3's `explain` are not implemented yet -- see
-//! [`explain_predicate`](gix_query::explain_predicate)'s doc for why a
+//! [`explain_predicate`](git_query::explain_predicate)'s doc for why a
 //! partially bound or goal-shaped explain is an open product question rather
 //! than missing plumbing.
 //!
@@ -17,7 +17,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use gix_query::{DerivationTree, HostRegistry, NegationWitness, RuleStore, Value};
+use git_query::{DerivationTree, HostRegistry, NegationWitness, RuleStore, Value};
 
 #[derive(Parser)]
 #[command(name = "git-query", bin_name = "git query")]
@@ -183,7 +183,7 @@ fn run_rule(command: RuleCommand) -> anyhow::Result<bool> {
             // Validate the whole program -- this module plus every other one
             // already published -- now, so a caller finds out immediately
             // rather than at the next query.
-            gix_query::checked_program(&repo)?;
+            git_query::checked_program(&repo)?;
             println!("stored {name} at refs/meta/rules/{name}");
             Ok(true)
         }
@@ -198,7 +198,7 @@ fn run_rule(command: RuleCommand) -> anyhow::Result<bool> {
         }
         RuleCommand::Check { repo } => {
             let repo = open_repo(repo)?;
-            gix_query::checked_program(&repo)?;
+            git_query::checked_program(&repo)?;
             println!("ok");
             Ok(true)
         }
@@ -212,7 +212,7 @@ fn run_goal(
 ) -> anyhow::Result<bool> {
     let repo = open_repo(repo)?;
     let select: Vec<&str> = select.iter().map(String::as_str).collect();
-    let rows = gix_query::run_goal(&repo, goal, &select)?;
+    let rows = git_query::run_goal(&repo, goal, &select)?;
     print_rows(&rows);
     Ok(!rows.is_empty())
 }
@@ -227,7 +227,7 @@ fn run_predicate(
         .iter()
         .map(|s| parse_bind(s))
         .collect::<Result<_, _>>()?;
-    let rows = gix_query::run_predicate(&repo, predicate, &bound)?;
+    let rows = git_query::run_predicate(&repo, predicate, &bound)?;
     print_rows(&rows);
     Ok(!rows.is_empty())
 }
@@ -242,7 +242,7 @@ fn run_explain(
         .iter()
         .map(|s| parse_bind(s))
         .collect::<Result<_, _>>()?;
-    match gix_query::explain_predicate(&repo, predicate, &bound)? {
+    match git_query::explain_predicate(&repo, predicate, &bound)? {
         Some(tree) => {
             print_derivation(&tree, 0);
             Ok(true)
@@ -257,7 +257,7 @@ fn run_explain(
 /// Render a [`DerivationTree`] as an indented outline: one node per line,
 /// two spaces per level. Not `ARCHITECTURE.md`'s format -- the doc does not
 /// specify one -- but the library's own [`DerivationTree`] shape rendered
-/// plainly, so a reader can trace exactly what [`gix_query::explain_predicate`]
+/// plainly, so a reader can trace exactly what [`git_query::explain_predicate`]
 /// returned without a second, invented vocabulary in between.
 fn print_derivation(tree: &DerivationTree, depth: usize) {
     let pad = "  ".repeat(depth);

@@ -42,7 +42,7 @@
 //! numbered among the nine because it validates [`gix_query_ir::EffectDecl`]s,
 //! a declaration form the rule body language does not produce. Its pieces --
 //! [`check_acyclicity`], [`read_namespaces`], [`footprint_of_body`] -- are
-//! public so that `gix-query`'s facade can offer the same check over effect
+//! public so that `git-query`'s facade can offer the same check over effect
 //! docs at define time without a second graph.
 //!
 //! # What this crate does not do

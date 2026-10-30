@@ -3,20 +3,38 @@ name = "git-effect"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "A git external subcommand for defining git-effect docs. `define` only in this phase -- see DEVPLAN-effect.md Phase B1."
+description = "The effect doc, trigger detection, the executor seam, and the transition log, plus the `git effect` external subcommand -- see DEVPLAN-effect.md Part B."
+
+[features]
+default = ["cli"]
+cli = ["dep:anyhow", "dep:clap", "dep:serde", "dep:toml", "gix/interrupt"]
 
 [[bin]]
 name = "git-effect"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
-gix-effect = { path = "../gix-effect" }
+git-query = { path = "../git-query", default-features = false }
+gix-query-ir = { path = "../gix-query-ir" }
+gix-query-parse = { path = "../gix-query-parse" }
 gix-store = { git = "https://github.com/git-ents/git-store.git" }
-gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "interrupt", "revision"] }
-clap = { version = "4", features = ["derive"] }
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
+facet-git-tree = "0.1.0-alpha.1"
+# Pinned, same rev `gix-query-host`/`test-support` name: the Action schema
+# (D7) is attested through this crate's envelope, and its consumer contract
+# must not drift out from under git-effect on an unrelated lockfile refresh.
+gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
+facet = { version = "0.50.0-rc.0", features = ["reflect"] }
+gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
+thiserror = "2"
+# CLI-only: the `git effect` binary's argument parsing, error reporting, and
+# the TOML shape it parses its `define` doc from. The library stays free of
+# all four, per `DEVPLAN-effect.md`'s dependency list.
+anyhow = { version = "1", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
 
 [dev-dependencies]
 test-support = { path = "../test-support" }

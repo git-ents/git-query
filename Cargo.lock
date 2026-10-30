@@ -1396,12 +1396,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "facet",
+ "facet-git-tree",
+ "git-query",
  "gix",
- "gix-effect",
+ "gix-attest",
+ "gix-query-ir",
+ "gix-query-parse",
+ "gix-refstore",
  "gix-store",
  "serde",
  "tempfile",
  "test-support",
+ "thiserror",
  "toml",
 ]
 
@@ -1412,9 +1419,18 @@ dependencies = [
  "anyhow",
  "clap",
  "gix",
- "gix-query",
+ "gix-query-check",
+ "gix-query-eval",
+ "gix-query-host",
+ "gix-query-ir",
+ "gix-query-parse",
+ "gix-query-rules",
+ "gix-refstore",
+ "rstest",
+ "sha2",
  "tempfile",
  "test-support",
+ "thiserror",
 ]
 
 [[package]]
@@ -1645,24 +1661,6 @@ dependencies = [
  "gix-path",
  "gix-ref",
  "gix-sec",
- "thiserror",
-]
-
-[[package]]
-name = "gix-effect"
-version = "0.1.0"
-dependencies = [
- "facet",
- "facet-git-tree",
- "gix",
- "gix-attest",
- "gix-query",
- "gix-query-ir",
- "gix-query-parse",
- "gix-refstore",
- "gix-store",
- "tempfile",
- "test-support",
  "thiserror",
 ]
 
@@ -1940,25 +1938,6 @@ dependencies = [
  "gix-utils",
  "maybe-async",
  "nonempty",
- "thiserror",
-]
-
-[[package]]
-name = "gix-query"
-version = "0.1.0"
-dependencies = [
- "gix",
- "gix-query-check",
- "gix-query-eval",
- "gix-query-host",
- "gix-query-ir",
- "gix-query-parse",
- "gix-query-rules",
- "gix-refstore",
- "rstest",
- "sha2",
- "tempfile",
- "test-support",
  "thiserror",
 ]
 

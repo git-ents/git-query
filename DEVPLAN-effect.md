@@ -3,7 +3,7 @@
 Two efforts, one document, because they share this repo and a dependency edge.
 
 **Part A** brings git-query to `../git-anchor/ARCHITECTURE.md`: claims re-backed by attest, `key_valid_at`, footprint-based effect stratification, and the already-planned cache/promotion tail.
-**Part B** implements git-effect as two new crates here — **`gix-effect`** (library) and **`git-effect`** (CLI, invoked as `git effect`) — per the doc's placement rule: "lives in query's repo until the rule language settles — every effect change touches that language."
+**Part B** implements git-effect as one crate here — **`git-effect`**, the library plus its `git effect` subcommand behind a default-on `cli` feature — per the doc's placement rule: "lives in query's repo until the rule language settles — every effect change touches that language."
 
 This document extends `DEVPLAN.md`; its decisions (§2.7 author order, §2.11 Nemo-only, §2.12 unrepresentable states, one-binary-per-product) carry over unmodified.
 Prerequisite: `../git-anchor/DEVPLAN-attest.md` Phases 1–2 — Part A's claim migration and Part B's authorization both consume `gix-attest`'s consumer contract.
@@ -64,7 +64,7 @@ Retroactivity of key revocation stays an open rule-policy question; the predicat
 ### C4. Pass 10 over footprints, exported
 
 Reads are computed, not declared: build the effect graph from writer-declared write sets × reader *footprints* — pass 7's output mapped through `Backing::RefGlob` to ref namespaces — as the adoc specifies.
-Export the acyclicity check from `gix-query`'s facade (per `DEVPLAN.md`'s "exports it as a public [check] … in the effect runner"), so `gix-effect` calls it rather than reimplementing graph, marks, or overlap.
+Export the acyclicity check from `git-query`'s facade (per `DEVPLAN.md`'s "exports it as a public [check] … in the effect runner"), so `git-effect` calls it rather than reimplementing graph, marks, or overlap.
 `Namespace` and `EffectDecl` stay in `gix-query-ir`; effect does not get its own copy.
 
 ### C5. Cache and promotion: unchanged plan, one addition
@@ -141,7 +141,7 @@ pub trait Executor {
 What effect does own is the boundary check: every `RefEdit` an executor's emitted records imply is checked against the effect's declared `writes` via `Namespace::overlaps` (imported from `gix-query-ir`), and a violation aborts the transition before anything advances.
 Emitted action-record claims are inside the declared write set, so the C4 stratification sees executor side channels — that is the fork-bomb argument, and it only holds if this boundary check is unskippable.
 
-#### D7. The Action schema is registered by gix-effect, pro tem
+#### D7. The Action schema is registered by git-effect, pro tem
 
 `Action { key: { executor, inputs, params }, output }` with `key` marked `identity_key`, registered at `refs/schema/action`.
 Action is "not a product," but a schema needs a registering owner, and effect is the first consumer that cannot exist without it (idempotence keys, D5; action-record triggers, worked example 3).
@@ -160,7 +160,7 @@ This ref is authoritative — it fails the rederive test; it exists because an a
 | concern | owner | effect's relationship |
 |---|---|---|
 | rule language, parsing, validation, footprints | gix-query-parse / -check / -ir | calls; D1 bodies are its language |
-| stratification / acyclicity check | gix-query (C4 export) | calls at define time |
+| stratification / acyclicity check | git-query (C4 export) | calls at define time |
 | evaluation | gix-query-eval (Nemo) | `run_goal` through the facade |
 | hashing, normal form, typed docs, ref CAS | store | calls |
 | envelope, crypto verification | gix-attest | calls for authorization + record emission |
@@ -171,15 +171,15 @@ This ref is authoritative — it fails the rederive test; it exists because an a
 ### Crate layout
 
 ```text
-crates/gix-effect       doc.rs        EffectDoc, Then, schema registration, define-time validation
+crates/git-effect       doc.rs        EffectDoc, Then, schema registration, define-time validation
                         trigger.rs    delta-restricted re-evaluation (D3), intent refs (D4)
                         run.rs        gate evaluation, authorization via attest, Executor seam,
                                       write-set boundary check, idempotence (D5)
                         record.rs     Action schema (D7), transition log (D8)
-crates/git-effect       main.rs       define | status | log
+                        main.rs       define | status | log (behind a default-on `cli` feature)
 ```
 
-`gix-effect` deps: `gix-query` (facade), `gix-query-ir`, `gix-query-parse`, `gix-store`, `gix-refstore`, `facet-git-tree`, `gix-attest` (git dep to `../git-anchor`'s repo), `thiserror`.
+`git-effect` deps: `git-query` (facade), `gix-query-ir`, `gix-query-parse`, `gix-store`, `gix-refstore`, `facet-git-tree`, `gix-attest` (git dep to `../git-anchor`'s repo), `thiserror`.
 Notably absent: `gix-query-eval` (engine reached only through the facade), `gix-anchor` (anchor vocabulary reaches effects only as claims through query).
 
 ### Phases

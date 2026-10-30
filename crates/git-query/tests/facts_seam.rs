@@ -2,16 +2,16 @@
 //! base facts: a [`FactSource`] answering for predicates it registers into
 //! its own clone of [`HostRegistry::host`] via [`PredicateEntry::edb`].
 //! `run_goal_with`/`run_predicate_with` layer that source over a fresh
-//! `RepoFacts` internally ([`gix_query::Layered`]), so a goal may join a
+//! `RepoFacts` internally ([`git_query::Layered`]), so a goal may join a
 //! consumer-contributed predicate against a built-in one in the same rule
 //! body without the consumer's own [`FactSource`] ever answering for
-//! `commit/1` itself. Depends on nothing but `gix_query`, the way
+//! `commit/1` itself. Depends on nothing but `git_query`, the way
 //! `git-forge` would.
 //!
 //! Nemo's `execute()` enters a process-global timing mutex; run this file
 //! with `--test-threads=1`.
 
-use gix_query::{
+use git_query::{
     ArgSet, Backing, Bindings, Fact, FactSource, Facts, HostError, HostRegistry, PredicateEntry,
     PredicateKey, QueryError, Value, ValueType,
 };
@@ -81,7 +81,7 @@ fn run_goal_with_joins_a_consumer_predicate_against_a_built_in_one() {
         flagged: vec![Value::sym(first.as_str())],
     };
 
-    let rows = gix_query::run_goal_with(&repo, &registry, &facts, "flagged(X), commit(X)", &["X"])
+    let rows = git_query::run_goal_with(&repo, &registry, &facts, "flagged(X), commit(X)", &["X"])
         .expect("runs");
 
     assert_eq!(
@@ -106,7 +106,7 @@ fn run_predicate_with_answers_a_bare_consumer_predicate() {
     };
 
     let rows =
-        gix_query::run_predicate_with(&repo, &registry, &facts, "flagged", &[]).expect("runs");
+        git_query::run_predicate_with(&repo, &registry, &facts, "flagged", &[]).expect("runs");
     assert_eq!(rows, vec![vec![Value::sym(first.as_str())]]);
 }
 
@@ -136,7 +136,7 @@ fn a_predicate_the_registry_declares_but_no_source_answers_is_a_host_error() {
         flagged: Vec::new(),
     };
     let err =
-        gix_query::run_predicate_with(&repo, &registry, &facts, "unanswered", &[]).unwrap_err();
+        git_query::run_predicate_with(&repo, &registry, &facts, "unanswered", &[]).unwrap_err();
     assert!(
         matches!(err, QueryError::Eval(_)),
         "expected a host/eval error, got {err:?}"

@@ -8,7 +8,7 @@
 //! `git effect define`; those are B2/B3, per `DEVPLAN-effect.md`'s "Phases").
 
 use facet::Facet;
-use gix_query::{
+use git_query::{
     EffectCheckError, EffectDecl, EffectUnderCheck, Namespace, body_read_namespaces,
     checked_program,
 };
@@ -116,7 +116,7 @@ pub enum Error {
     /// Assembling the checked rule program (host registry + every published
     /// module) that `when`/`gate` are validated against failed.
     #[error(transparent)]
-    Query(#[from] gix_query::QueryError),
+    Query(#[from] git_query::QueryError),
     /// Define-time validation rejected this effect -- a parse failure, a body
     /// that does not validate, or a cycle in the effect graph. Rejected
     /// *before* anything is written, per D1: "an effect that would create a
@@ -126,7 +126,7 @@ pub enum Error {
     Invalid {
         /// The effect that was rejected.
         name: String,
-        /// Every problem [`gix_query::check_effect_acyclicity`] found.
+        /// Every problem [`git_query::check_effect_acyclicity`] found.
         errors: Vec<EffectCheckError>,
     },
     /// `when`'s computed footprint reaches a ref namespace that is not
@@ -230,12 +230,12 @@ impl<'r> EffectStore<'r> {
     /// boundary"), so a rejected define leaves the repository untouched:
     ///
     /// 1. `when` and `gate` are parsed with `gix-query-parse` and validated
-    ///    against the host registry, by [`gix_query::check_effect_acyclicity`]
+    ///    against the host registry, by [`git_query::check_effect_acyclicity`]
     ///    itself -- it parses and checks each body before taking its
     ///    footprint, so a syntax or resolution error surfaces as
     ///    [`EffectCheckError::Parse`]/[`EffectCheckError::Body`] here.
     /// 2. The acyclicity check (`DEVPLAN-effect.md` C4, exported by
-    ///    `gix-query`) runs over every already-registered effect plus this
+    ///    `git-query`) runs over every already-registered effect plus this
     ///    one, so a `when`/`gate` whose footprint lands in this or any other
     ///    effect's declared write set is rejected, naming the namespace.
     ///
@@ -256,7 +256,7 @@ impl<'r> EffectStore<'r> {
             .collect();
         effects.push(under_check(doc.clone()));
 
-        if let Err(errors) = gix_query::check_effect_acyclicity(&checked, &effects) {
+        if let Err(errors) = git_query::check_effect_acyclicity(&checked, &effects) {
             return Err(Error::Invalid {
                 name: doc.name,
                 errors,
@@ -323,7 +323,7 @@ fn is_authoritative(namespace: &Namespace) -> bool {
 }
 
 /// Project a stored [`EffectDoc`] into the shape
-/// [`gix_query::check_effect_acyclicity`] needs: the declared write set, and
+/// [`git_query::check_effect_acyclicity`] needs: the declared write set, and
 /// the source of every body whose footprint contributes to the computed read
 /// set (`when` and `gate` both -- D1: both are read at trigger and admission
 /// time).

@@ -21,7 +21,7 @@
 //! the ambiguity lint), and every one of those consumers needs a concept
 //! this crate does not have -- "which rules are gates", "what the effect
 //! graph is" -- so they belong to whatever assembles gate rules
-//! (`gix-query-rules`, `gix-query`), not here. What this pass owns is
+//! (`gix-query-rules`, `git-query`), not here. What this pass owns is
 //! getting the traversal right, which the two tests below check directly
 //! against the footprint's contents.
 

@@ -104,7 +104,7 @@ pub trait FactSource {
 /// the built-in repo facts: [`FactSource`] is a trait precisely so a
 /// consumer can supply its own implementation, and this type is what lets
 /// that implementation sit *beside* the host's (`gix-query-host`'s
-/// `RepoFacts`), rather than having to reimplement or wrap it. `gix-query`'s
+/// `RepoFacts`), rather than having to reimplement or wrap it. `git-query`'s
 /// `run_goal_with`/`run_predicate_with`/`run_body_with` build one of these
 /// per call, layering the caller's [`FactSource`] over a fresh `RepoFacts`,
 /// so a caller never constructs one for that path; it stays public for the

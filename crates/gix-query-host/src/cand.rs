@@ -203,7 +203,7 @@ fn candidates(
     // declares no `Backing` for it (`BuiltinEntry` has no such field), so a
     // rule calling it contributes no namespace to any footprint
     // (`gix_query_check::read_namespaces` only ever projects `PredicateEntry`
-    // backings). `gix-effect`'s trigger detection therefore never selects an
+    // backings). `git-effect`'s trigger detection therefore never selects an
     // effect on `cand`/`bind` alone as a candidate for a ref transition, and
     // this leg of the read seam has nothing to answer "as of" -- always live.
     // Built fresh per leg below (as cheap as the `GixRefStore` it wraps)

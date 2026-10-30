@@ -159,10 +159,10 @@ pub enum EffectCheckError {
 /// another's *computed* read set.
 ///
 /// This is the export `DEVPLAN-effect.md` D9 assigns to this crate and
-/// `gix-effect` calls at `git effect define` time, over every effect the
+/// `git-effect` calls at `git effect define` time, over every effect the
 /// repository has registered plus the one being defined: rejecting a cycle
 /// when the doc is written is the earliest possible boundary, and it means
-/// `gix-effect` reimplements neither the graph, nor the DFS marks, nor
+/// `git-effect` reimplements neither the graph, nor the DFS marks, nor
 /// [`Namespace`] overlap.
 ///
 /// Each effect's read set is computed, not declared: every body in
@@ -241,14 +241,14 @@ pub fn check_effect_acyclicity(
 ///
 /// This is the same footprint-to-namespace projection
 /// [`check_effect_acyclicity`] uses internally over an effect's `when`+`gate`
-/// bodies together, exposed here for a single body in isolation. `gix-effect`
+/// bodies together, exposed here for a single body in isolation. `git-effect`
 /// needs exactly this for two things `check_effect_acyclicity` does not
 /// answer on its own: D3's trigger selection ("effects whose `when` footprint
 /// overlaps the advanced ref") and D3's authoritative-refs-only validation --
 /// both ask what one body (`when` alone) reads, not what an effect's `when`
-/// and `gate` read combined. Exporting this rather than letting `gix-effect`
+/// and `gate` read combined. Exporting this rather than letting `git-effect`
 /// reimplement it is D9's boundary: "stratification / acyclicity check ->
-/// gix-query -> calls at define time" -- the footprint projection is part of
+/// git-query -> calls at define time" -- the footprint projection is part of
 /// that machinery, not effect's to own.
 ///
 /// # Errors
@@ -453,7 +453,7 @@ pub fn run_goal_with_cached<F: FactSource>(
 /// default [`gix_query_parse::parse_goal`] gives tier 1's desugaring.
 ///
 /// This is [`run_goal`] without an explicit `--select`, which is what a
-/// caller re-evaluating an effect's `when`/`gate` body wants (`gix-effect`'s
+/// caller re-evaluating an effect's `when`/`gate` body wants (`git-effect`'s
 /// trigger detection, `DEVPLAN-effect.md` D3): the whole point is comparing
 /// *which tuples* the body derives before and after a ref transition, so
 /// collapsing every row to an empty tuple -- what `run_goal(repo, body, &[])`
@@ -517,7 +517,7 @@ pub fn run_body_cached(
 /// instead of its real one (`Some` = held this value, `None` = did not
 /// exist), rather than against the live repository.
 ///
-/// This is the seam `gix-effect`'s trigger detection (`DEVPLAN-effect.md`
+/// This is the seam `git-effect`'s trigger detection (`DEVPLAN-effect.md`
 /// D3) evaluates a `when` body "at old" through, replacing what used to be a
 /// rewind-then-restore of the real ref: [`RepoFacts::as_of`] layers a
 /// read-only [`gix_refstore::AsOfRefStore`] decorator under the same
@@ -729,7 +729,7 @@ fn run_checked_goal_full(
 ///
 /// This wires faithfully to [`gix_query_eval::explain`] rather than working
 /// around it, and that entry point has two known gaps of its own, pinned by
-/// `gix-query/tests/run.rs`: it returns `Ok(None)` for a bare base predicate
+/// `git-query/tests/run.rs`: it returns `Ok(None)` for a bare base predicate
 /// traced directly with no defining rule (Nemo's tracer only produces a node
 /// when a join forces a rule application), and it errors on any predicate a
 /// rule module defines, because module predicates are always qualified with

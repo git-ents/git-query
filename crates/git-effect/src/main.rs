@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use gix_effect::{EffectDoc, EffectStore, RecordStore, Then, TransitionRecord};
+use git_effect::{EffectDoc, EffectStore, RecordStore, Then, TransitionRecord};
 use serde::Deserialize;
 
 #[derive(Parser)]
@@ -67,7 +67,7 @@ enum Command {
 /// `gate`) plus a short list (`writes`) and a small tagged union (`then`),
 /// and needs no dependency beyond `serde` + `toml`, which nothing else in
 /// this workspace's `Cargo.lock` outside this one binary crate pulls in --
-/// `gix-effect` itself stays free of both, per `DEVPLAN-effect.md`'s
+/// `git-effect` itself stays free of both, per `DEVPLAN-effect.md`'s
 /// dependency list.
 #[derive(Debug, Deserialize)]
 struct EffectDocFile {
@@ -191,10 +191,10 @@ fn run_log(repo: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn outcome_label(outcome: &gix_effect::Outcome) -> String {
+fn outcome_label(outcome: &git_effect::Outcome) -> String {
     match outcome {
-        gix_effect::Outcome::Advanced => "advanced".to_owned(),
-        gix_effect::Outcome::Failed { reason } => format!("failed ({reason})"),
+        git_effect::Outcome::Advanced => "advanced".to_owned(),
+        git_effect::Outcome::Failed { reason } => format!("failed ({reason})"),
     }
 }
 
@@ -281,13 +281,13 @@ mod tests {
         fixture.commit("first");
         let repo = fixture.open();
 
-        let store = gix_effect::EffectStore::open(&repo).unwrap();
+        let store = git_effect::EffectStore::open(&repo).unwrap();
         store
-            .define(gix_effect::EffectDoc {
+            .define(git_effect::EffectDoc {
                 name: "never-fired".to_owned(),
                 when: "member(M)".to_owned(),
                 gate: "member(M)".to_owned(),
-                then: gix_effect::Then::Advance {
+                then: git_effect::Then::Advance {
                     ref_: "refs/heads/main".to_owned(),
                     to: "HEAD".to_owned(),
                 },
@@ -313,7 +313,7 @@ mod tests {
                     new: "cc".to_owned(),
                     key: "aabb".to_owned(),
                     edits: vec![],
-                    outcome: gix_effect::Outcome::Advanced,
+                    outcome: git_effect::Outcome::Advanced,
                 },
             )
             .unwrap();

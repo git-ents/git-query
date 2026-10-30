@@ -1,13 +1,13 @@
 # git-query — dev plan
 
 Implement `docs/query-and-rules.adoc`: a Datalog query and rules layer over git, with one frontend and one IR.
-Two published-shape crates in the family style — **`gix-query`** (library) and **`git-query`** (CLI, invoked as `git query`) — plus internal crates behind them.
+Two published-shape crates in the family style — **`git-query`** (invoked as `git query`) and **`git-effect`** (invoked as `git effect`), each a library plus its own external subcommand — plus internal `gix-query-*` crates behind them.
 
 Template: `../git-store` and `../git-anchor`.
 Copy conventions, configs, and workflows verbatim, adapting names, exactly as `../git-anchor/DEVPLAN.md` did.
 
-**Naming, non-negotiable:** `gix-*` for every library crate, `git-*` for every binary.
-There is exactly **one** binary — `git-query`, invoked as `git query` — with subcommands `run`, `explain`, `rules`, `predicates` (§1.10).
+**Naming:** a `git-*` crate is a library plus its own `git <name>` subcommand, behind a default-on `cli` feature; the internal query crates are `gix-query-*` libraries.
+`git-query`, invoked as `git query`, carries subcommands `run`, `explain`, `rules`, `predicates` (§1.10).
 No `git-explain`, no `git-rules`.
 
 **What is actually being built, stated once:** a mode-checked, magic-set-rewritten Datalog frontend over a git-backed EDB, evaluated by a fixpoint engine reached through a seam.
@@ -842,7 +842,7 @@ If a second engine ever earns its place, extracting a trait from one working imp
 - **The workspace is nightly-only.** `nemo` and `nemo-physical` use `#![feature(…)]`, so everything linking them needs nightly. `rust-toolchain.toml` at the root pins an exact nightly; a floating channel would make our build reproducibility a function of upstream's mood.
 - **Nothing in the dependency chain can be published to crates.io.**
   Publication of `nemo` stopped at a yanked `0.2.1`, so it enters as a git dependency, and crates.io refuses any crate that has one.
-  `gix-query` and `git-query` are therefore installed from source until Nemo publishes.
+  `git-query` is therefore installed from source until Nemo publishes.
 - **230 transitive crates**, including an HTTP client, an LSP implementation, and an RDF/SPARQL stack, none of it reachable from anything we do.
 - **No concurrency, no cancellation.**
   The API is `!Send` throughout and `execute()` enters a process-global timing mutex.
@@ -953,12 +953,11 @@ Create **all** skeletons in Phase 1, before fanning out, so each agent edits onl
 | `gix-query-host` | repo-backed EDB providers, `bind`/`bind_fuzzy`, backing-source declarations. Only crate that depends on `gix-anchor`. |
 | `gix-query-rules` | module load/store via `gix-store`, whole-program assembly, epoch CAS, cache key. |
 | `gix-query-kernel` | the frozen `ascent!` denial rules + differential test harness. |
-| `gix-query` | facade: the library surface everything above composes into, plus the footprint/acyclicity export (§2.6). |
-| `git-query` | **the one binary**, `git query`: `run` (three tiers), `explain`, `rules`, `predicates`. Owns the formatter, and therefore abbreviation (§1.9) and span coalescing (§1.8). |
+| `git-query` | one crate, a facade library and **the one binary** `git query`: the library surface everything above composes into (plus the footprint/acyclicity export, §2.6), and `run` (three tiers), `explain`, `rules`, `predicates`. Owns the formatter, and therefore abbreviation (§1.9) and span coalescing (§1.8). |
 | `test-support` | copied from `../git-store`, trimmed. |
 
-Naming is mechanical and has no exceptions: **`gix-*` is a library, `git-*` is a binary**, matching `../git-store` and `../git-anchor`.
-There is one `git-*` crate in this workspace and there will not be a second — `explain` and `rules` are subcommands, not binaries (§1.10).
+Naming is mechanical: a `git-*` crate is a library plus its own `git <name>` subcommand, and the internal query crates are `gix-query-*` libraries.
+`git-query` and `git-effect` are the only `git-*` crates in this workspace — `explain` and `rules` are subcommands of `git query`, not binaries (§1.10).
 
 `gix-query-eval` must **not** depend on `gix` or `gix-anchor`.
 Builtins and EDB providers reach it through the traits defined in `gix-query-ir`.
@@ -1158,7 +1157,7 @@ It is not a style note here — the fragment containment that §2.11 relies on *
   Join the tree's leaves against the demand call log to attach builtin modes, the projection heuristic version, source refs, and the rules-snapshot OID.
   This is the step that turns a derivation into an audit record, and none of it can come from the engine, which is why the log exists.
 
-- **Agent `effects`** → footprint export in `gix-query`.
+- **Agent `effects`** → footprint export in `git-query`.
   Public API returning a goal's transitive base-predicate footprint and the acyclicity verdict over a set of effect declarations.
   Leg 1 only, per §2.6.
   Obligation: doc comment stating the sound-and-incomplete asymmetry; a test that a spurious denial is a spurious *denial* and not a spurious admission.
@@ -1280,7 +1279,7 @@ Admission-time benchmarking stays too, demoted to what it actually is: early war
 5. **Closed: Nemo is the only engine.**
    §2.11 records the decision and what it costs.
    The two alternatives that remain live are **vendoring Nemo** — removes the crates.io blocker and pins semantics exactly, keeps the nightly requirement, takes on 230 crates of maintenance — and **waiting for Nemo to publish**, which is not actionable on this schedule.
-   Revisit if publication of `gix-query` becomes a requirement, or if a Nemo bump ever fails the conformance suite in a way we cannot work around above the lowering.
+   Revisit if publication of `git-query` becomes a requirement, or if a Nemo bump ever fails the conformance suite in a way we cannot work around above the lowering.
 6. **Gate evaluation point — the biggest product call here.**
    Pre-receive versus merge/promotion (§5).
    Moving gates to promotion removes the push-path DoS surface entirely; the price is that authors learn about gate failures later, softened but not erased by an advisory pre-check.

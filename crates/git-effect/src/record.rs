@@ -70,7 +70,7 @@ pub fn advance_key(
     Ok(key)
 }
 
-/// D7: the `Action` schema, "registered by `gix-effect`, pro tem." One
+/// D7: the `Action` schema, "registered by `git-effect`, pro tem." One
 /// labeled parameter -- `params` is a list rather than a map because the
 /// identity normal form's `Struct`/`Map` shapes both demand either
 /// schema-fixed field names or a scalar key type spelled out by hand, and a

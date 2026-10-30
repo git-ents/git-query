@@ -12,12 +12,12 @@
 //! the current repository state -- so what runs here is *delta-restricted
 //! re-evaluation*: [`TriggerDetector::candidates`] narrows the effect set to
 //! those whose `when` footprint overlaps the transitioning ref (reusing
-//! [`gix_query::check_effect_acyclicity`]'s footprint-to-namespace projection
-//! via [`gix_query::body_read_namespaces`], D9's "calls, never reimplements"),
+//! [`git_query::check_effect_acyclicity`]'s footprint-to-namespace projection
+//! via [`git_query::body_read_namespaces`], D9's "calls, never reimplements"),
 //! and [`TriggerDetector::fire`] re-evaluates only *those* effects' `when`
 //! bodies, once against `self.repo` as it stands (`new`) and once against a
 //! read-only as-of view of it with only the transitioning ref overridden
-//! back to `old` (`gix_query::run_body_as_of`) -- not the whole EDB, and not
+//! back to `old` (`git_query::run_body_as_of`) -- not the whole EDB, and not
 //! every registered effect, and -- since D9 forbids reimplementing ref
 //! mechanics here -- not by writing to the repository to find out either
 //! (see [`TriggerDetector::fire`]'s own doc for why an earlier version of
@@ -39,7 +39,7 @@
 
 use std::collections::BTreeMap;
 
-use gix_query::{Namespace, RefName, Value};
+use git_query::{Namespace, RefName, Value};
 use gix_store::{
     GixRefStore, InvalidRefName, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed,
 };
@@ -66,12 +66,12 @@ pub enum TriggerError {
     /// Loading effect docs or running a body against the checked program
     /// failed.
     #[error(transparent)]
-    Query(#[from] gix_query::QueryError),
+    Query(#[from] git_query::QueryError),
     /// One of the candidate effects' `when` bodies failed to parse or
     /// validate -- it was accepted at `define` time against a program that
     /// has since changed shape (a rule module was edited or removed).
     #[error(transparent)]
-    Check(#[from] gix_query::EffectCheckError),
+    Check(#[from] git_query::EffectCheckError),
     /// The effect store itself failed to open, list, or read a doc.
     #[error(transparent)]
     Doc(#[from] crate::doc::Error),
@@ -105,19 +105,19 @@ impl<'r> TriggerDetector<'r> {
 
     /// Every currently defined effect whose `when` footprint overlaps
     /// `transition.ref_` -- the footprint-narrowed candidate set D3 fires
-    /// against, computed the same way [`gix_query::check_effect_acyclicity`]
+    /// against, computed the same way [`git_query::check_effect_acyclicity`]
     /// computes read sets (reused, not reimplemented, per D9).
     ///
     /// # Errors
     /// See [`TriggerError`].
     pub fn candidates(&self, transition: &Transition) -> Result<Vec<EffectDoc>, TriggerError> {
-        let checked = gix_query::checked_program(self.repo)?;
+        let checked = git_query::checked_program(self.repo)?;
         let store = EffectStore::open(self.repo)?;
         let advanced = Namespace::new(transition.ref_.clone());
 
         let mut out = Vec::new();
         for doc in store.list()? {
-            let reads = gix_query::body_read_namespaces(&checked, &doc.when)?;
+            let reads = git_query::body_read_namespaces(&checked, &doc.when)?;
             if reads.iter().any(|namespace| namespace.overlaps(&advanced)) {
                 out.push(doc);
             }
@@ -134,7 +134,7 @@ impl<'r> TriggerDetector<'r> {
     /// the "before" snapshot, every other ref stays exactly as it is in
     /// `self.repo` right now.
     ///
-    /// "At old" is answered through [`gix_query::run_body_as_of`], an
+    /// "At old" is answered through [`git_query::run_body_as_of`], an
     /// as-of view over `transition.ref_` alone (`gix_refstore::AsOfRefStore`,
     /// via `git-store`) -- **not** by rewinding the real ref and restoring it
     /// after, which this used to do. That mutated the repository to answer a
@@ -163,7 +163,7 @@ impl<'r> TriggerDetector<'r> {
         // "at new": the repository's current, already-transitioned state.
         let mut after = BTreeMap::new();
         for doc in &candidates {
-            after.insert(doc.name.clone(), gix_query::run_body(self.repo, &doc.when)?);
+            after.insert(doc.name.clone(), git_query::run_body(self.repo, &doc.when)?);
         }
 
         // "at old": the same repository, read through a view where only
@@ -172,7 +172,7 @@ impl<'r> TriggerDetector<'r> {
         let mut before = BTreeMap::new();
         for doc in &candidates {
             let rows =
-                gix_query::run_body_as_of(self.repo, &doc.when, [(name.clone(), transition.old)])?;
+                git_query::run_body_as_of(self.repo, &doc.when, [(name.clone(), transition.old)])?;
             before.insert(doc.name.clone(), rows);
         }
 
@@ -464,7 +464,7 @@ mod tests {
     /// the ref outright for the duration of the call, briefly making it
     /// absent to any concurrent reader on a server where a ref store is the
     /// transaction manager (D4). The as-of view
-    /// (`gix_query::run_body_as_of`, `gix_refstore::AsOfRefStore`) answers
+    /// (`git_query::run_body_as_of`, `gix_refstore::AsOfRefStore`) answers
     /// the same question without touching the repository at all: every ref
     /// and the transitioning ref's own reflog are snapshotted before
     /// `fire()` and asserted byte-identical after.

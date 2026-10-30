@@ -109,8 +109,8 @@ pub fn read_namespaces(footprint: &Footprint, registry: &Registry) -> ReadNamesp
 /// *computed* read set.
 ///
 /// This is the input [`check_acyclicity`] takes, and the shape a caller
-/// outside this crate -- `gix-effect` at effect-define time, through
-/// `gix-query`'s facade -- assembles from an effect doc plus the footprint of
+/// outside this crate -- `git-effect` at effect-define time, through
+/// `git-query`'s facade -- assembles from an effect doc plus the footprint of
 /// its parsed body.
 #[derive(Debug, Clone)]
 pub struct EffectReads {
@@ -167,7 +167,7 @@ enum Mark {
 ///
 /// The single entry point for the acyclicity property, shared by [`check`]
 /// (module-resident declarations, during whole-program validation) and by
-/// `gix-query`'s facade export (registered effect docs, at define time), so
+/// `git-query`'s facade export (registered effect docs, at define time), so
 /// that neither reimplements the graph, the marks, or the overlap test.
 #[must_use]
 pub fn check_acyclicity(effects: &[EffectReads]) -> Errors {
@@ -266,7 +266,7 @@ mod tests {
         Namespace::new(s)
     }
 
-    /// Build the reader/writer pairs directly, the way `gix-effect` will:
+    /// Build the reader/writer pairs directly, the way `git-effect` will:
     /// declared writes, computed reads.
     fn reads(name: &str, reads: Vec<Namespace>, writes: Vec<Namespace>) -> EffectReads {
         EffectReads {
