@@ -12,7 +12,7 @@ use git_query::{
     EffectCheckError, EffectDecl, EffectUnderCheck, Namespace, body_read_namespaces,
     checked_program,
 };
-use gix_store::{
+use git_store::{
     GixRefStore, InvalidRefName, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed,
 };
 
@@ -107,9 +107,9 @@ pub enum Error {
     /// `name` is not usable as a ref segment.
     #[error(transparent)]
     InvalidName(#[from] InvalidRefName),
-    /// The underlying `gix-store` operation failed.
+    /// The underlying `git-store` operation failed.
     #[error(transparent)]
-    Store(#[from] gix_store::Error),
+    Store(#[from] git_store::Error),
     /// Computing the stored record's schema failed.
     #[error(transparent)]
     Schema(#[from] facet_git_tree::SchemaError),

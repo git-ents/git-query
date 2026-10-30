@@ -5,7 +5,7 @@
 //! Before this, `member.rs` and `anchor.rs` read straight off
 //! `gix::Repository` (`try_find_reference`, `references()?.prefixed(...)`),
 //! duplicating "resolve one ref" and "list a ref namespace", which
-//! `claim.rs` already had through `gix-store`'s `Kind`/`Store`, itself
+//! `claim.rs` already had through `git-store`'s `Kind`/`Store`, itself
 //! backed by [`gix_refstore::RefStore`]. Routing every module through this
 //! one type is what makes [`crate::facts::RepoFacts::as_of`] possible at
 //! all: an [`AsOfRefStore`] decorator answers every ref read in the crate
@@ -16,7 +16,7 @@
 //! comment for why mutating the repository to answer a read is wrong in the
 //! first place).
 //!
-//! `gix_store::Store<R, O>`'s one inherent impl block requires both
+//! `git_store::Store<R, O>`'s one inherent impl block requires both
 //! `R: RefStore` and `R: Committer`, even for its read-only methods
 //! (`kind()`, `dynamic()`) -- see that crate's `store.rs`. [`AsOfRefStore`]
 //! implements only `RefStore` (identity is orthogonal to which refs are
@@ -24,7 +24,7 @@
 //! [`HostRefs`] adds `Committer` by delegating to the same repository's own
 //! [`GixRefStore`]. Every read still goes straight through
 //! `AsOfRefStore::read`/`prefixed`, unmodified (D9's "calls, never
-//! reimplements"); this type adds only the extra trait `gix-store`
+//! reimplements"); this type adds only the extra trait `git-store`
 //! structurally demands alongside it, not any overlay logic of its own.
 
 use gix::ObjectId;

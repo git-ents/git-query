@@ -40,7 +40,7 @@
 use std::collections::BTreeMap;
 
 use git_query::{Namespace, RefName, Value};
-use gix_store::{
+use git_store::{
     GixRefStore, InvalidRefName, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed,
 };
 
@@ -220,9 +220,9 @@ pub enum IntentError {
     /// `target_ref` is not usable as ref-path material.
     #[error(transparent)]
     InvalidName(#[from] InvalidRefName),
-    /// The underlying `gix-store` operation failed.
+    /// The underlying `git-store` operation failed.
     #[error(transparent)]
-    Store(#[from] gix_store::Error),
+    Store(#[from] git_store::Error),
     /// Computing the stored record's schema failed.
     #[error(transparent)]
     Schema(#[from] facet_git_tree::SchemaError),
@@ -231,8 +231,8 @@ pub enum IntentError {
 /// Storage for intent refs at `refs/intent/<target-ref>/<n>`.
 ///
 /// `<n>` here is the commit's own object id rather than an incrementing
-/// integer: `gix-store`'s `Kind::write(..).anonymous_under(group)` primitive
-/// (`gix-store/src/kind.rs`) already gives a collision-free, append-only name
+/// integer: `git-store`'s `Kind::write(..).anonymous_under(group)` primitive
+/// (`git-store/src/kind.rs`) already gives a collision-free, append-only name
 /// under a group prefix -- reusing it is D9's "calls, never reimplements"
 /// applied to naming, not just to evaluation; hand-rolling a sequence counter
 /// with CAS-retry would duplicate exactly what that primitive is for. Every
@@ -254,7 +254,7 @@ impl<'r> IntentStore<'r> {
     /// returns `Result`.
     pub fn open(
         repo: &'r gix::Repository,
-        signer: impl gix_store::Signer + 'static,
+        signer: impl git_store::Signer + 'static,
     ) -> Result<Self, IntentError> {
         let layout = Layout {
             data: RefPrefix::new("refs").expect("built-in ref prefix is valid"),
@@ -289,7 +289,7 @@ impl<'r> IntentStore<'r> {
         self.ensure_schema()?;
         let group = RefPath::new(intent.ref_.as_str())?;
         let commit = self.kind().write(&intent).anonymous_under(&group)?;
-        Ok(gix_store::entity_name_under(&group, commit))
+        Ok(git_store::entity_name_under(&group, commit))
     }
 
     /// The intent at `path`, or `None` once it has been consumed.
@@ -351,16 +351,16 @@ mod tests {
     /// A minimal `Signer` for tests that only need *some* signature bytes
     /// present -- `ClaimFixture` (`crates/test-support/src/claim.rs`) is the
     /// model when a test needs `git verify-commit` to actually pass; the
-    /// intent and record tests here only assert on what `gix-store` reads
+    /// intent and record tests here only assert on what `git-store` reads
     /// back, so a fixed byte string is enough to exercise the `Signer` seam
     /// itself without re-deriving `ClaimFixture`'s `ssh-keygen` plumbing.
     struct FixedSigner;
 
-    impl gix_store::Signer for FixedSigner {
+    impl git_store::Signer for FixedSigner {
         type Error = std::convert::Infallible;
 
-        fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
-            Ok(gix_store::SignatureBytes::from(b"test-signature".to_vec()))
+        fn sign(&self, _bytes: &[u8]) -> Result<git_store::SignatureBytes, Self::Error> {
+            Ok(git_store::SignatureBytes::from(b"test-signature".to_vec()))
         }
     }
 

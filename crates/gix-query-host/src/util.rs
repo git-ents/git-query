@@ -56,7 +56,7 @@ pub(crate) fn backend_msg(key: &PredicateKey, message: impl Into<String>) -> Hos
     }
 }
 
-/// The number of 1-based lines in `blob` -- [`gix_anchor`]'s own
+/// The number of 1-based lines in `blob` -- [`git_anchor`]'s own
 /// line-counting convention (`lines_with_terminator`): a trailing newline
 /// does not add an empty final line, and a final line missing one still
 /// counts as a line.

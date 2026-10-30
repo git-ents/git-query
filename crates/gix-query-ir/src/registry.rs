@@ -35,7 +35,7 @@ pub enum ValueType {
     /// fields.
     Location,
     /// `cand/5`'s and `bind/5`'s fourth column: which oracle contributed a
-    /// candidate -- `pin`, or one of `gix_anchor::Oracle`'s three named
+    /// candidate -- `pin`, or one of `git_anchor::Oracle`'s three named
     /// oracles.
     Oracle,
 }
@@ -74,7 +74,7 @@ impl ValueType {
             // a host invariant, not a type-system one.
             Self::Content => Some(&["intact", "edited", "none"]),
             // Pin dominates the lattice at confidence 1.0 by construction
-            // (ARCHITECTURE.md), but is not itself a `gix_anchor::Oracle`
+            // (ARCHITECTURE.md), but is not itself a `git_anchor::Oracle`
             // variant -- it is query's own leg, added to anchor's three.
             Self::Oracle => Some(&["pin", "op_log", "diff_trace", "fingerprint"]),
             _ => None,
@@ -676,7 +676,7 @@ pub fn host_predicates() -> Vec<PredicateEntry> {
     // be bound.
     let keyed_on_subject = ArgSet::from_indices([0]);
 
-    // `gix-attest`'s layout: one ref per target key, claims chained as commits
+    // `git-attest`'s layout: one ref per target key, claims chained as commits
     // on it. A single star matches, because a target key is one component.
     let claims = || vec![RefGlob("refs/claims/*".into())];
     let members = || vec![RefGlob("refs/meta/members/*".into())];
@@ -1119,7 +1119,7 @@ mod tests {
         let e = r
             .predicate(&PredicateKey::new("verdict", 2))
             .expect("verdict");
-        // `gix-attest`'s layout, not the retired interim `refs/meta/claims/*`.
+        // `git-attest`'s layout, not the retired interim `refs/meta/claims/*`.
         assert_eq!(e.ref_globs().collect::<Vec<_>>(), vec!["refs/claims/*"]);
         // And a content-addressed one contributes nothing, because its oid is
         // already in the goal.

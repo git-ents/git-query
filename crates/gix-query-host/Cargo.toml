@@ -6,9 +6,9 @@ license = "MIT OR Apache-2.0"
 description = "Repo-backed fact sources and the projection builtins for git-query."
 
 [dependencies]
-gix-anchor = { workspace = true }
-gix-attest = { workspace = true }
-gix-store = { workspace = true }
+git-anchor = { workspace = true }
+git-attest = { workspace = true }
+git-store = { workspace = true }
 gix-refstore = { workspace = true }
 facet = { workspace = true }
 gix-query-ir = { workspace = true }

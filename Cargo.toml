@@ -36,10 +36,10 @@ anyhow = "1"
 ascent = "0.8"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
-facet = { version = "0.50.0-rc.0", features = ["reflect"] }
-facet-format = "0.50.0-rc.5"
-facet-git-tree = "0.1.0-alpha.1"
-facet-value = "0.50.0-rc.5"
+facet = { version = "0.50.0-rc.7", features = ["reflect"] }
+facet-format = "0.50.0-rc.7"
+facet-git-tree = { git = "https://github.com/git-ents/facet-git-tree", features = ["value"] }
+facet-value = "0.50.0-rc.7"
 gix = { version = "0.85.0", default-features = false, features = ["sha1", "zlib-rs", "revision"] }
 proptest = "1"
 rstest = "0.26"
@@ -51,17 +51,13 @@ tokio = "1"
 toml = "0.8"
 
 # Git dependencies.
-gix-anchor = { git = "https://github.com/git-ents/git-anchor.git" }
-# Pinned: `git-anchor` is under active development, and an unpinned git dep
-# would pull half-finished work into this crate's claim EDB on every lockfile
-# refresh. The rev is attest's Phase-1+2 completion -- the commit whose
-# consumer contract `claim.rs` is written against. Shared by `gix-query-host`,
-# `test-support`, and `git-effect`, whose Action schema (D7) is attested
-# through this crate's envelope.
-gix-attest = { git = "https://github.com/git-ents/git-anchor.git" }
-gix-store = { git = "https://github.com/git-ents/git-store.git" }
-# `AsOfRefStore`, not re-exported by `gix-store`: the read-only overlay
-# `RepoFacts::as_of` is built on (`refs.rs`). Same repo as `gix-store`, so the
+git-anchor = { git = "https://github.com/git-ents/git-anchor.git" }
+# Shared by `gix-query-host`, `test-support`, and `git-effect`, whose Action
+# schema (D7) is attested through this crate's envelope.
+git-attest = { git = "https://github.com/git-ents/git-anchor.git" }
+git-store = { git = "https://github.com/git-ents/git-store.git" }
+# `AsOfRefStore`, not re-exported by `git-store`: the read-only overlay
+# `RepoFacts::as_of` is built on (`refs.rs`). Same repo as `git-store`, so the
 # two move together under one `cargo update`.
 gix-refstore = { git = "https://github.com/git-ents/git-store.git" }
 # Nemo is a git dependency because it is not published, and crates.io refuses

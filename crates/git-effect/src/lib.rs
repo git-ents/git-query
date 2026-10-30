@@ -20,8 +20,8 @@
 //! projection (`git_query::check_effect_acyclicity`/`body_read_namespaces`,
 //! C4), evaluation (`git_query::run_goal`/`run_body`, Nemo through the
 //! facade -- never `gix-query-eval` directly), typed-doc storage, ref CAS,
-//! and hashing/normal form (`gix-store`/`facet-git-tree`), and the claim
-//! envelope, signing, and verification (`gix-attest`, called for
+//! and hashing/normal form (`git-store`/`facet-git-tree`), and the claim
+//! envelope, signing, and verification (`git-attest`, called for
 //! authorization and action-record emission -- never re-implemented here).
 //! `Namespace` and `EffectDecl` come from `gix-query-ir` via the facade; this
 //! crate does not redeclare them.

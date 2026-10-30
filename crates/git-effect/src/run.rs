@@ -8,13 +8,13 @@
 //! effect's declared `writes` via `Namespace::overlaps` ..., and a violation
 //! aborts the transition before anything advances." [`record_action`] is
 //! that boundary made structural: it is the only function in this crate that
-//! calls [`gix_attest::Claims::sign`], and it always checks first, so there
+//! calls [`git_attest::Claims::sign`], and it always checks first, so there
 //! is no path from an [`Executor`]'s output to a written claim that skips
 //! the check.
 
 use git_query::Namespace;
+use git_store::{Committer, RefStore};
 use gix::objs::{Find, Write};
-use gix_store::{Committer, RefStore};
 
 use crate::doc::{EffectDoc, Then};
 use crate::record::{
@@ -34,7 +34,7 @@ pub trait Executor {
     /// # Errors
     /// [`ExecError`] on any failure the executor wants surfaced; this crate
     /// neither retries nor interprets it.
-    fn run(&self, key: &ActionKey) -> Result<gix_attest::Oid, ExecError>;
+    fn run(&self, key: &ActionKey) -> Result<git_attest::Oid, ExecError>;
 }
 
 /// Why an [`Executor::run`] failed.
@@ -104,7 +104,7 @@ pub enum RunError {
     NormalForm(#[from] facet_git_tree::NormalFormError),
     /// Signing or resolving the action record's claim failed.
     #[error(transparent)]
-    Attest(#[from] gix_attest::Error),
+    Attest(#[from] git_attest::Error),
     /// The transition log or the action schema failed.
     #[error(transparent)]
     Record(#[from] RecordError),
@@ -120,7 +120,7 @@ pub enum RunError {
     /// `then.ref_`, or a claim target's derived ref, is not a usable ref
     /// name.
     #[error(transparent)]
-    InvalidRefName(#[from] gix_store::InvalidRefName),
+    InvalidRefName(#[from] git_store::InvalidRefName),
 }
 
 /// Whether `effect`'s `gate` currently derives at least one row -- D6/D7's
@@ -149,8 +149,8 @@ fn writes_of(effect: &EffectDoc) -> Vec<Namespace> {
 /// [`facet_git_tree::NormalFormError`] if `key` cannot be hashed.
 pub fn action_target(
     key: &ActionKey,
-) -> Result<gix_attest::Target, facet_git_tree::NormalFormError> {
-    Ok(gix_attest::Target {
+) -> Result<git_attest::Target, facet_git_tree::NormalFormError> {
+    Ok(git_attest::Target {
         kind: crate::record::ACTION_TARGET_KIND.to_owned(),
         id: action_key(key)?.into(),
     })
@@ -158,19 +158,19 @@ pub fn action_target(
 
 /// Sign `action` as a claim, after checking that the claim ref it lands on
 /// lies inside `writes`. The only function in this crate that calls
-/// [`gix_attest::Claims::sign`]; see the module docs for why that makes the
+/// [`git_attest::Claims::sign`]; see the module docs for why that makes the
 /// boundary structural rather than a convention.
 ///
 /// # Errors
 /// [`RunError::Boundary`] if the claim ref falls outside `writes`, without
 /// writing anything; otherwise a hashing, ref-name, or attest failure.
 pub fn record_action<R, O>(
-    claims: &gix_attest::Claims<'_, R, O>,
+    claims: &git_attest::Claims<'_, R, O>,
     effect: &str,
     writes: &[Namespace],
     action_tree: gix::ObjectId,
     action: &Action,
-    signer: gix_attest::Oid,
+    signer: git_attest::Oid,
 ) -> Result<gix::ObjectId, RunError>
 where
     R: RefStore + Committer,
@@ -181,7 +181,7 @@ where
     let touched = Namespace::new(reference.as_str().to_owned());
     check_boundary(effect, writes, &touched)?;
 
-    let envelope = gix_attest::Envelope {
+    let envelope = git_attest::Envelope {
         target,
         payload: action_tree.into(),
         payload_kind: crate::record::ACTION_TARGET_KIND.to_owned(),
@@ -206,14 +206,14 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn fire_run<R, O>(
     repo: &gix::Repository,
-    store: &gix_store::Store<R, O>,
+    store: &git_store::Store<R, O>,
     records: &RecordStore<'_>,
     effect: &EffectDoc,
     trigger: &Transition,
     executor: &dyn Executor,
-    inputs: Vec<gix_attest::Oid>,
+    inputs: Vec<git_attest::Oid>,
     params: Vec<Param>,
-    signer: gix_attest::Oid,
+    signer: git_attest::Oid,
 ) -> Result<RecordOutcome, RunError>
 where
     R: RefStore + Committer,
@@ -244,7 +244,7 @@ where
     let action_tree = compile_action(store, &action)?;
 
     let writes = writes_of(effect);
-    let claims = gix_attest::Claims::open(store);
+    let claims = git_attest::Claims::open(store);
     let claim_id = record_action(&claims, &effect.name, &writes, action_tree, &action, signer)?;
     let claim_ref = claims.reference(&action_target(&key)?)?.as_str().to_owned();
 
@@ -305,18 +305,18 @@ where
         return Ok(RecordOutcome::NoOp(existing));
     }
 
-    let name = gix_store::RefName::new(ref_.as_str())?;
+    let name = git_store::RefName::new(ref_.as_str())?;
     let current = refs.read(&name).map_err(|source| RunError::RefStore {
         ref_: ref_.clone(),
         source: Box::new(source),
     })?;
     let edit = match current {
-        Some(expected) => gix_store::RefEdit::Update {
+        Some(expected) => git_store::RefEdit::Update {
             name: name.clone(),
             expected,
             new,
         },
-        None => gix_store::RefEdit::Create {
+        None => git_store::RefEdit::Create {
             name: name.clone(),
             new,
         },
@@ -359,11 +359,11 @@ mod tests {
     }
 
     struct StubExecutor {
-        output: gix_attest::Oid,
+        output: git_attest::Oid,
     }
 
     impl Executor for StubExecutor {
-        fn run(&self, _key: &ActionKey) -> Result<gix_attest::Oid, ExecError> {
+        fn run(&self, _key: &ActionKey) -> Result<git_attest::Oid, ExecError> {
             Ok(self.output)
         }
     }
@@ -371,7 +371,7 @@ mod tests {
     struct FailingExecutor;
 
     impl Executor for FailingExecutor {
-        fn run(&self, _key: &ActionKey) -> Result<gix_attest::Oid, ExecError> {
+        fn run(&self, _key: &ActionKey) -> Result<git_attest::Oid, ExecError> {
             Err(ExecError("stub executor refuses".to_owned()))
         }
     }
@@ -406,7 +406,7 @@ mod tests {
         let fixture = Fixture::init(dir.path());
         let repo = fixture.open();
         let claims_fixture = ClaimFixture::new(&fixture);
-        let store = gix_store::RepoStore::open_with_layout(&repo, gix_attest::layout());
+        let store = git_store::RepoStore::open_with_layout(&repo, git_attest::layout());
         crate::record::register_action_schema(&store).unwrap();
 
         let key = ActionKey {
@@ -421,7 +421,7 @@ mod tests {
         let action_tree = compile_action(&store, &action).unwrap();
 
         let refs_before = fixture.refs();
-        let claims = gix_attest::Claims::open(&store);
+        let claims = git_attest::Claims::open(&store);
         let err = record_action(
             &claims,
             "build_on_push",
@@ -450,7 +450,7 @@ mod tests {
         let fixture = Fixture::init(dir.path());
         let repo = fixture.open();
         let claims_fixture = ClaimFixture::new(&fixture);
-        let store = gix_store::RepoStore::open_with_layout(&repo, gix_attest::layout());
+        let store = git_store::RepoStore::open_with_layout(&repo, git_attest::layout());
         crate::record::register_action_schema(&store).unwrap();
         let member_hex = fixture.commit("member commit");
         fixture.update_ref(&format!("refs/meta/members/{member_hex}"), &member_hex);
@@ -466,7 +466,7 @@ mod tests {
             &["refs/claims/*"],
         );
 
-        let output: gix_attest::Oid = gix::ObjectId::from_bytes_or_panic(&[0xcc; 20]).into();
+        let output: git_attest::Oid = gix::ObjectId::from_bytes_or_panic(&[0xcc; 20]).into();
         let executor = StubExecutor { output };
         let records = RecordStore::open(&repo, test_signer()).unwrap();
 
@@ -514,7 +514,7 @@ mod tests {
         let fixture = Fixture::init(dir.path());
         let repo = fixture.open();
         let claims_fixture = ClaimFixture::new(&fixture);
-        let store = gix_store::RepoStore::open_with_layout(&repo, gix_attest::layout());
+        let store = git_store::RepoStore::open_with_layout(&repo, git_attest::layout());
         crate::record::register_action_schema(&store).unwrap();
 
         let effect = doc(
@@ -568,7 +568,7 @@ mod tests {
         );
         let effect_tree = gix::ObjectId::from_bytes_or_panic(&[0x42; 20]);
         let records = RecordStore::open(&repo, test_signer()).unwrap();
-        let refs = gix_store::GixRefStore::new(&repo);
+        let refs = git_store::GixRefStore::new(&repo);
 
         let outcome = fire_advance(
             &repo,
@@ -614,7 +614,7 @@ mod tests {
         );
         let effect_tree = gix::ObjectId::from_bytes_or_panic(&[0x42; 20]);
         let records = RecordStore::open(&repo, test_signer()).unwrap();
-        let refs = gix_store::GixRefStore::new(&repo);
+        let refs = git_store::GixRefStore::new(&repo);
 
         let refs_before = fixture.refs();
         let err = fire_advance(
@@ -635,11 +635,11 @@ mod tests {
     /// `record::tests::FixedSigner`'s rationale, duplicated locally.
     struct FixedSigner;
 
-    impl gix_store::Signer for FixedSigner {
+    impl git_store::Signer for FixedSigner {
         type Error = std::convert::Infallible;
 
-        fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
-            Ok(gix_store::SignatureBytes::from(b"test-signature".to_vec()))
+        fn sign(&self, _bytes: &[u8]) -> Result<git_store::SignatureBytes, Self::Error> {
+            Ok(git_store::SignatureBytes::from(b"test-signature".to_vec()))
         }
     }
 

@@ -9,7 +9,7 @@ description = "Rule-module storage under refs/meta/rules, whole-program assembly
 gix-query-ir = { workspace = true }
 gix-query-parse = { workspace = true }
 gix-query-check = { workspace = true }
-gix-store = { workspace = true }
+git-store = { workspace = true }
 facet-git-tree = { workspace = true }
 facet-value = { workspace = true }
 facet-format = { workspace = true }

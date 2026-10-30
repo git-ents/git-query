@@ -40,7 +40,7 @@ const PROVIDED: &[(&str, usize)] = &[
 /// The override set is stored, not resolved into a [`HostRefs`] eagerly:
 /// each dispatched predicate builds its own [`HostRefs`] fresh
 /// ([`RepoFacts::refs`]), the same way `claim.rs`'s `ClaimReader` already
-/// opened its own `gix-store` `Store` fresh per call before this existed --
+/// opened its own `git-store` `Store` fresh per call before this existed --
 /// so a query touching only content-addressed predicates (`commit`,
 /// `parent`, `tree_entry`, `author`, `line`) never pays for a ref read it
 /// does not make.
@@ -125,7 +125,7 @@ impl FactSource for RepoFacts<'_> {
 mod tests {
     use super::*;
     use facet::Facet;
-    use gix_attest::Target;
+    use git_attest::Target;
     use gix_query_ir::{Backing, PredicateClass, Value, host_predicates};
     use test_support::{ClaimFixture, Fixture};
 
@@ -248,7 +248,7 @@ mod tests {
         );
 
         let repo = f.open();
-        let anchor = gix_anchor::capture(&repo, "HEAD", "a.txt", None).expect("capture");
+        let anchor = git_anchor::capture(&repo, "HEAD", "a.txt", None).expect("capture");
         crate::anchor::attach(&repo, anchor).expect("attach anchor");
         drop(repo);
 

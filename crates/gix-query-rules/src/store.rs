@@ -1,13 +1,13 @@
-//! Rule-module storage at `refs/meta/rules/<name>`, via `gix-store`.
+//! Rule-module storage at `refs/meta/rules/<name>`, via `git-store`.
 
 use facet::Facet;
-use gix_store::{GixRefStore, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed};
+use git_store::{GixRefStore, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed};
 
 use crate::error::Error;
 
 /// Where module data lives: `<DATA_PREFIX>/<KIND>/<name>`, i.e.
 /// `refs/meta/rules/<name>` -- a rule module is a rule module regardless of
-/// what serializes it, so the namespace names the domain, not `gix-store`'s
+/// what serializes it, so the namespace names the domain, not `git-store`'s
 /// own mechanism (`refs/store/…`).
 const DATA_PREFIX: &str = "refs/meta";
 const SCHEMA_PREFIX: &str = "refs/schema";

@@ -1,19 +1,19 @@
 //! `anchor(A)`, backed by `refs/anchors/<id>` -- one ref per anchor,
 //! pointing directly at the serialized [`Binding`] tree
-//! [`Binding::serialize_into`] returns (its [`gix_anchor::CaptureHandle`]),
+//! [`Binding::serialize_into`] returns (its [`git_anchor::CaptureHandle`]),
 //! never a commit: an anchor's own identity carries no history of its own.
 //!
-//! Binding-keyed storage used to live in `gix_anchor::Store`; that crate now
+//! Binding-keyed storage used to live in `git_anchor::Store`; that crate now
 //! owns identity and the oracle chain only (ARCHITECTURE.md, "git-anchor"),
 //! so this is `git-query`'s own minimal registry -- the one place a `cand`
-//! call resolves an anchor id to the [`gix_anchor::Anchor`] its oracles
+//! call resolves an anchor id to the [`git_anchor::Anchor`] its oracles
 //! project onto a revision. The store holds every [`Binding`] variant `git
 //! anchor inject` writes; only [`Binding::Position`] is an anchor in this
 //! language's sense, so this predicate (and [`lookup`]) reports/answers only
 //! that subset, matching `cand`'s own refusal of anything else.
 
+use git_anchor::{Anchor, Binding, CaptureHandle};
 use gix::ObjectId;
-use gix_anchor::{Anchor, Binding, CaptureHandle};
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey};
 use gix_refstore::{RefName, RefPrefix, RefStore};
 
@@ -136,20 +136,20 @@ mod tests {
         f.commit_file("a.txt", "one\ntwo\nthree\n", "first");
         let repo = f.open();
 
-        let anchor = gix_anchor::capture(
+        let anchor = git_anchor::capture(
             &repo,
             "HEAD",
             "a.txt",
-            Some(gix_anchor::LineRange { start: 1, end: 2 }),
+            Some(git_anchor::LineRange { start: 1, end: 2 }),
         )
         .expect("capture");
         let position_id = attach(&repo, anchor).expect("attach position");
 
         let commit_binding = Binding::Commit {
-            identity: gix_anchor::CommitIdentity {
+            identity: git_anchor::CommitIdentity {
                 commit: repo.head_id().expect("head").detach().into(),
             },
-            hints: gix_anchor::NoHints {},
+            hints: git_anchor::NoHints {},
         };
         let commit_handle = commit_binding.serialize_into(&repo).expect("serialize");
         let commit_id = ObjectId::from(commit_binding.anchor_id().expect("anchor_id"));

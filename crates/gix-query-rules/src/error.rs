@@ -3,12 +3,12 @@
 /// A rule-module storage or assembly error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The underlying `gix-store` operation failed.
+    /// The underlying `git-store` operation failed.
     #[error(transparent)]
-    Store(#[from] gix_store::Error),
+    Store(#[from] git_store::Error),
     /// A module name is not a valid ref segment.
     #[error(transparent)]
-    InvalidName(#[from] gix_store::InvalidRefName),
+    InvalidName(#[from] git_store::InvalidRefName),
     /// Computing the stored record's schema failed.
     #[error(transparent)]
     Schema(#[from] facet_git_tree::SchemaError),

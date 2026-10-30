@@ -17,7 +17,7 @@
 //! candidate away before any rule got a look at it.
 //!
 //! `cand` composes two legs: pin ([`crate::claim::rebind_pin_locs`], at
-//! confidence 1.0 by construction) and `gix-anchor`'s oracle chain
+//! confidence 1.0 by construction) and `git-anchor`'s oracle chain
 //! (`op_log`, `diff_trace`, `fingerprint`) -- "each oracle contributes
 //! candidates as separate base facts" (ARCHITECTURE.md), so every candidate
 //! becomes its own row here rather than being folded together. The pin leg
@@ -27,7 +27,7 @@
 //! `Loc` is one atomic term, `"<path>:<start>-<end>"` (`ValueType::Location`):
 //! the value domain has no tuple type to hold a path and a byte span as
 //! separate fields. Formatting it this way also matches
-//! `gix_anchor::RebindPin`'s own `(path, span)` payload shape, so the pin leg
+//! `git_anchor::RebindPin`'s own `(path, span)` payload shape, so the pin leg
 //! reads a claim's `Loc:` trailer back verbatim rather than reassembling it
 //! from separate columns.
 //!
@@ -47,7 +47,7 @@
 //! Two things here are backed by it, and both say so the same way rather than
 //! inventing a second convention:
 //!
-//! - `op_log` is called with no [`gix_anchor::OpLogSource`], so it is
+//! - `op_log` is called with no [`git_anchor::OpLogSource`], so it is
 //!   absent-safe and contributes zero candidates. The call stays in
 //!   [`candidates`] as a marker for the day a source exists, rather than
 //!   silently dropping the oracle from the chain.
@@ -55,8 +55,8 @@
 //!   absent value -- see its own documentation for why, and for the one place
 //!   the gap is written down.
 
+use git_anchor::{Candidate, Oracle};
 use gix::ObjectId;
-use gix_anchor::{Candidate, Oracle};
 use gix_query_ir::{Bindings, Builtin, HostError, PredicateKey, Value};
 
 use crate::claim::rebind_pin_locs;
@@ -189,7 +189,7 @@ impl Builtin for RepoBuiltins<'_> {
 type Row = (&'static str, i64, String);
 
 /// Every candidate `anchor_oid` has at `rev_oid`, from every leg of the
-/// lattice -- pin, then the oracle chain in `gix_anchor::oracle`'s own
+/// lattice -- pin, then the oracle chain in `git_anchor::oracle`'s own
 /// highest-to-lowest fidelity order. Unselected: this is `cand`'s whole
 /// extension for `(anchor_oid, rev_oid)`, not an answer.
 fn candidates(
@@ -217,17 +217,17 @@ fn candidates(
 
     if let Some(anchor) = crate::anchor::lookup(repo, &HostRefs::live(repo), key, anchor_oid)? {
         let rev_text = rev_oid.to_string();
-        let anchor_id = gix_anchor::AnchorId::from(anchor_oid);
+        let anchor_id = git_anchor::AnchorId::from(anchor_oid);
 
-        for candidate in gix_anchor::op_log(None, anchor_id, rev_oid) {
+        for candidate in git_anchor::op_log(None, anchor_id, rev_oid) {
             out.push(labeled(repo, key, target_tree, candidate)?);
         }
         for candidate in
-            gix_anchor::diff_trace(repo, &anchor, &rev_text).map_err(|error| backend(key, error))?
+            git_anchor::diff_trace(repo, &anchor, &rev_text).map_err(|error| backend(key, error))?
         {
             out.push(labeled(repo, key, target_tree, candidate)?);
         }
-        for candidate in gix_anchor::fingerprint_oracle(repo, &anchor, &rev_text)
+        for candidate in git_anchor::fingerprint_oracle(repo, &anchor, &rev_text)
             .map_err(|error| backend(key, error))?
         {
             out.push(labeled(repo, key, target_tree, candidate)?);
@@ -310,8 +310,8 @@ fn satisfies(bound: Bindings<'_>, tuple: &[Value]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gix_anchor::{REBIND_PIN_KIND, RebindPin};
-    use gix_attest::Target;
+    use git_anchor::{REBIND_PIN_KIND, RebindPin};
+    use git_attest::Target;
     use test_support::{ClaimFixture, Fixture};
 
     use super::*;
@@ -390,11 +390,11 @@ mod tests {
         f.git(&["add", "-A"]);
         f.commit("one");
         let repo = f.open();
-        let anchor = gix_anchor::capture(
+        let anchor = git_anchor::capture(
             &repo,
             "HEAD",
             "file.txt",
-            Some(gix_anchor::LineRange { start: 3, end: 4 }),
+            Some(git_anchor::LineRange { start: 3, end: 4 }),
         )
         .expect("capture");
         let id = crate::anchor::attach(&repo, anchor).expect("attach");
@@ -417,11 +417,11 @@ mod tests {
     }
 
     /// `cand` reports the pin candidate *and* the lower-confidence oracle
-    /// candidate side by side -- unselected, both survive, and it is
+    /// candidates side by side -- unselected, all survive, and it is
     /// `bind`'s rule, not this builtin, that picks pin at confidence 1.0
-    /// over it (ARCHITECTURE.md: "a pin dominates the lattice at 1.0 by
+    /// over them (ARCHITECTURE.md: "a pin dominates the lattice at 1.0 by
     /// construction"). The anchored range itself is edited, so `diff_trace`
-    /// reports nothing and `fingerprint` is the only oracle candidate, at
+    /// reports nothing and `fingerprint` is the only oracle that answers, at
     /// less than 1.0.
     #[test]
     fn cand_reports_the_pin_and_the_lower_confidence_oracle_candidate_side_by_side() {
@@ -431,11 +431,11 @@ mod tests {
         f.git(&["add", "-A"]);
         f.commit("one");
         let repo = f.open();
-        let anchor = gix_anchor::capture(
+        let anchor = git_anchor::capture(
             &repo,
             "HEAD",
             "file.txt",
-            Some(gix_anchor::LineRange { start: 5, end: 6 }),
+            Some(git_anchor::LineRange { start: 5, end: 6 }),
         )
         .expect("capture");
         let id = crate::anchor::attach(&repo, anchor).expect("attach");
@@ -458,17 +458,20 @@ mod tests {
         let repo = f.open();
         let head = f.rev_parse("HEAD");
 
-        // Confirm the setup: without a pin, only a sub-maximum fingerprint
-        // candidate is on offer.
+        // Confirm the setup: without a pin, only sub-maximum fingerprint
+        // candidates are on offer -- the minhash oracle reports every window
+        // above zero similarity, not just the single best.
         let key = PredicateKey::new("cand", 5);
         let mut out = Vec::new();
         RepoBuiltins::new(&repo)
             .call(&key, &cand_args(&id.to_string(), &head), &mut out)
             .expect("call");
-        assert_eq!(out.len(), 1);
-        let (_, oracle, confidence) = row(&out, 0);
-        assert_eq!(oracle, "fingerprint");
-        assert_ne!(confidence, 10_000, "setup: the edit must cost confidence");
+        assert!(!out.is_empty());
+        for i in 0..out.len() {
+            let (_, oracle, confidence) = row(&out, i);
+            assert_eq!(oracle, "fingerprint");
+            assert_ne!(confidence, 10_000, "setup: the edit must cost confidence");
+        }
 
         // The pin arrives the only way pins arrive: a signed `rebind-pin`
         // claim on the anchor, its payload written against anchor's own
@@ -496,23 +499,26 @@ mod tests {
         RepoBuiltins::new(&repo)
             .call(&key, &cand_args(&id.to_string(), &head), &mut out)
             .expect("call");
-        assert_eq!(
-            out.len(),
-            2,
-            "cand does not select; both candidates survive"
-        );
-        let mut oracles: Vec<String> = Vec::new();
+        let mut pin_count = 0;
+        let mut fingerprint_count = 0;
         let mut pin_confidence = None;
         for i in 0..out.len() {
             let (loc, oracle, confidence) = row(&out, i);
-            if oracle == "pin" {
-                pin_confidence = Some(confidence);
-                assert_eq!(loc, "file.txt:200-260");
+            match oracle.as_str() {
+                "pin" => {
+                    pin_count += 1;
+                    pin_confidence = Some(confidence);
+                    assert_eq!(loc, "file.txt:200-260");
+                }
+                "fingerprint" => fingerprint_count += 1,
+                other => panic!("unexpected oracle: {other}"),
             }
-            oracles.push(oracle);
         }
-        oracles.sort();
-        assert_eq!(oracles, vec!["fingerprint", "pin"]);
+        assert_eq!(pin_count, 1, "cand does not select; the pin is one row");
+        assert!(
+            fingerprint_count >= 1,
+            "the edited anchor still leaves a fingerprint candidate"
+        );
         assert_eq!(pin_confidence, Some(10_000));
     }
 
@@ -527,7 +533,7 @@ mod tests {
         let f = Fixture::init(dir.path().join("r"));
         f.commit_file("file.txt", "a\nb\nc\n", "one");
         let repo = f.open();
-        let anchor = gix_anchor::capture(&repo, "HEAD", "file.txt", None).expect("capture");
+        let anchor = git_anchor::capture(&repo, "HEAD", "file.txt", None).expect("capture");
         let id = crate::anchor::attach(&repo, anchor).expect("attach");
 
         f.git(&["rm", "-q", "file.txt"]);
@@ -561,10 +567,10 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    /// `cand`'s registered version and `gix_anchor::DIFF_TRACE_ORACLE_VERSION`
+    /// `cand`'s registered version and `git_anchor::DIFF_TRACE_ORACLE_VERSION`
     /// are two constants declaring a related fact: `gix-query-host` is one of
     /// the few crates that can see both `gix_query_ir`'s registry and
-    /// `gix-anchor`'s own oracle versioning at once. A `diff_trace` behavior
+    /// `git-anchor`'s own oracle versioning at once. A `diff_trace` behavior
     /// change that bumps its oracle version with no matching bump in the
     /// registry would leave `cand`'s cache-key contribution unmoved, serving
     /// a cached answer computed under the old heuristic unchanged.
@@ -576,16 +582,16 @@ mod tests {
             .expect("cand is registered");
         assert_eq!(
             entry.props.version,
-            gix_anchor::DIFF_TRACE_ORACLE_VERSION,
+            git_anchor::DIFF_TRACE_ORACLE_VERSION,
             "cand's registered version has drifted from \
-             gix_anchor::DIFF_TRACE_ORACLE_VERSION; bump the registry \
+             git_anchor::DIFF_TRACE_ORACLE_VERSION; bump the registry \
              constant in gix-query-ir to match"
         );
     }
 
-    /// `gix_anchor::Oracle`'s three variants, plus `pin` (query's own leg),
+    /// `git_anchor::Oracle`'s three variants, plus `pin` (query's own leg),
     /// are exactly the closed domain `ValueType::Oracle` admits. The match
-    /// below has no wildcard arm, so `gix-anchor` adding a variant is a
+    /// below has no wildcard arm, so `git-anchor` adding a variant is a
     /// compile error here rather than a gap this test cannot see.
     #[test]
     fn oracle_labels_are_admitted_by_the_registry_domain() {
@@ -597,7 +603,7 @@ mod tests {
             };
             assert!(
                 gix_query_ir::ValueType::Oracle.admits(label),
-                "gix_anchor::Oracle::{oracle:?} labels as {label:?}, which \
+                "git_anchor::Oracle::{oracle:?} labels as {label:?}, which \
                  ValueType::Oracle's domain does not admit"
             );
         }

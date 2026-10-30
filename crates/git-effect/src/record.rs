@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use facet::Facet;
 use facet_git_tree::normal_form::{self, NormalForm};
-use gix_store::{
+use git_store::{
     GixRefStore, InvalidRefName, Kind, Layout, RefPath, RefPrefix, RefSegment, RepoStore, Typed,
 };
 
@@ -99,7 +99,7 @@ pub struct ActionKey {
     /// The executor's id and version, as one opaque label.
     pub executor: String,
     /// Pinned content hashes -- everything the action was run over.
-    pub inputs: Vec<gix_attest::Oid>,
+    pub inputs: Vec<git_attest::Oid>,
     /// Everything else that affects the output and is not ambient: engine
     /// version, diff algorithm, grammar version, and the like.
     pub params: Vec<Param>,
@@ -112,27 +112,27 @@ pub struct Action {
     /// What was run, over what, with what parameters.
     pub key: ActionKey,
     /// The content hash the run produced.
-    pub output: gix_attest::Oid,
+    pub output: git_attest::Oid,
 }
 
 /// The kind name [`Action`]'s schema is published under -- `refs/schema/action`
-/// under attest's layout ([`gix_attest::layout`]), which is exactly D7's "registered
+/// under attest's layout ([`git_attest::layout`]), which is exactly D7's "registered
 /// at `refs/schema/action`."
 pub const ACTION_KIND: &str = "action";
 
-/// The [`Target::kind`](gix_attest::Target::kind) label an action record's
-/// claim carries, and the [`Envelope::payload_kind`](gix_attest::Envelope::payload_kind)
+/// The [`Target::kind`](git_attest::Target::kind) label an action record's
+/// claim carries, and the [`Envelope::payload_kind`](git_attest::Envelope::payload_kind)
 /// its payload is written under -- one string for both, since a consumer
 /// joins a payload kind against `refs/schema/<kind>` the same way
-/// [`gix_attest`]'s own key and claim kinds do.
+/// [`git_attest`]'s own key and claim kinds do.
 pub const ACTION_TARGET_KIND: &str = ACTION_KIND;
 
-fn action_segment() -> gix_store::RefSegment {
-    gix_store::RefSegment::new(ACTION_KIND).expect("the action kind is a valid ref segment")
+fn action_segment() -> git_store::RefSegment {
+    git_store::RefSegment::new(ACTION_KIND).expect("the action kind is a valid ref segment")
 }
 
 /// `key` in the identity normal form's closed universe, by hand -- the same
-/// move as `gix_attest::Target`'s `to_normal_form`: the mapping has no
+/// move as `git_attest::Target`'s `to_normal_form`: the mapping has no
 /// reflection path from an arbitrary `Facet` type, so the field names here
 /// must match [`ActionKey`]'s, which [`register_action_schema`]'s universe
 /// check keeps honest.
@@ -172,7 +172,7 @@ pub fn action_key(key: &ActionKey) -> Result<gix::ObjectId, facet_git_tree::Norm
 
 /// Publish [`Action`]'s schema under [`ACTION_KIND`] in `store` -- the
 /// identity-universe check every schema registration runs
-/// ([`gix_store::KindSchema::write`]) is what this crate leans on for D7's
+/// ([`git_store::KindSchema::write`]) is what this crate leans on for D7's
 /// "`params` must be expressible in the identity normal form. Enforced at
 /// schema registration": a future `ActionKey` field that left the universe
 /// (an enum, an `Option`) would fail here, not at `action_key` time.
@@ -182,16 +182,16 @@ pub fn action_key(key: &ActionKey) -> Result<gix::ObjectId, facet_git_tree::Norm
 /// [`RecordError::Store`] when the store write fails, including the universe
 /// refusal above.
 pub fn register_action_schema<R, O>(
-    store: &gix_store::Store<R, O>,
+    store: &git_store::Store<R, O>,
 ) -> Result<gix::ObjectId, RecordError>
 where
-    R: gix_store::RefStore + gix_store::Committer,
+    R: git_store::RefStore + git_store::Committer,
     O: gix::objs::Find + gix::objs::Write,
 {
     Ok(store.kind::<Action>(action_segment()).publish()?)
 }
 
-/// Compile `action` into the payload tree an [`gix_attest::Envelope`] carries
+/// Compile `action` into the payload tree an [`git_attest::Envelope`] carries
 /// -- store's `{value/, schema/}` document tree, not a bare serialization, so
 /// a reader with no `Action` type of its own can still decode it against the
 /// schema [`register_action_schema`] published.
@@ -200,11 +200,11 @@ where
 /// [`RecordError::Store`] when no schema is published yet, or compilation
 /// fails.
 pub fn compile_action<R, O>(
-    store: &gix_store::Store<R, O>,
+    store: &git_store::Store<R, O>,
     action: &Action,
 ) -> Result<gix::ObjectId, RecordError>
 where
-    R: gix_store::RefStore + gix_store::Committer,
+    R: git_store::RefStore + git_store::Committer,
     O: gix::objs::Find + gix::objs::Write,
 {
     Ok(store.kind::<Action>(action_segment()).compile(action)?)
@@ -271,9 +271,9 @@ pub enum RecordError {
     /// a type this module controls end to end.
     #[error(transparent)]
     InvalidKey(#[from] InvalidRefName),
-    /// The underlying `gix-store` operation failed.
+    /// The underlying `git-store` operation failed.
     #[error(transparent)]
-    Store(#[from] gix_store::Error),
+    Store(#[from] git_store::Error),
     /// Computing the stored record's schema failed.
     #[error(transparent)]
     Schema(#[from] facet_git_tree::SchemaError),
@@ -330,7 +330,7 @@ impl<'r> RecordStore<'r> {
     /// still returns `Result`.
     pub fn open(
         repo: &'r gix::Repository,
-        signer: impl gix_store::Signer + 'static,
+        signer: impl git_store::Signer + 'static,
     ) -> Result<Self, RecordError> {
         let layout = Layout {
             data: RefPrefix::new("refs/effects").expect("built-in ref prefix is valid"),
@@ -418,11 +418,11 @@ mod tests {
     /// readable without hunting for a cross-module test helper.
     struct FixedSigner;
 
-    impl gix_store::Signer for FixedSigner {
+    impl git_store::Signer for FixedSigner {
         type Error = std::convert::Infallible;
 
-        fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
-            Ok(gix_store::SignatureBytes::from(b"test-signature".to_vec()))
+        fn sign(&self, _bytes: &[u8]) -> Result<git_store::SignatureBytes, Self::Error> {
+            Ok(git_store::SignatureBytes::from(b"test-signature".to_vec()))
         }
     }
 
@@ -561,13 +561,13 @@ mod tests {
 
     /// D7: `Action`'s schema registers under `refs/schema/action` in attest's
     /// own layout, so its target key composes with a claim's `payload_kind`
-    /// exactly like `gix-attest`'s own key and claim kinds.
+    /// exactly like `git-attest`'s own key and claim kinds.
     #[test]
     fn the_action_schema_registers_at_refs_schema_action() {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::init(dir.path());
         let repo = fixture.open();
-        let store = gix_store::RepoStore::open_with_layout(&repo, gix_attest::layout());
+        let store = git_store::RepoStore::open_with_layout(&repo, git_attest::layout());
         register_action_schema(&store).unwrap();
 
         let raw = fixture.git(&["for-each-ref", "refs/schema/action"]);
@@ -582,7 +582,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::init(dir.path());
         let repo = fixture.open();
-        let store = gix_store::RepoStore::open_with_layout(&repo, gix_attest::layout());
+        let store = git_store::RepoStore::open_with_layout(&repo, git_attest::layout());
         register_action_schema(&store).unwrap();
 
         let action = Action {

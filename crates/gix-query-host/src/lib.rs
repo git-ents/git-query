@@ -1,7 +1,7 @@
 //! Repo-backed fact sources and the projection builtins.
 //!
 //! This is the only crate in the workspace that depends on `gix` and
-//! `gix-anchor`: it implements the [`gix_query_ir::FactSource`] and
+//! `git-anchor`: it implements the [`gix_query_ir::FactSource`] and
 //! [`gix_query_ir::Builtin`] traits `gix-query-ir` declares, so that
 //! everything upstream of here -- the parser, the validator, the evaluator --
 //! stays property-testable over synthetic facts with no repository at all.

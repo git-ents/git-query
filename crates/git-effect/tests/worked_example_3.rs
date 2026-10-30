@@ -26,7 +26,7 @@
 //!   detection and real gate evaluation rather than predicates that do not
 //!   exist yet.
 //! - The write set an action record's claim lands under is
-//!   `refs/claims/<target-key>` (`gix-attest`'s actual, flat claim-ref
+//!   `refs/claims/<target-key>` (`git-attest`'s actual, flat claim-ref
 //!   layout), not the illustrative `refs/claims/action/kiln/*` above --
 //!   `refs/claims/*` is the real namespace this test declares and checks.
 //!
@@ -44,11 +44,11 @@ use test_support::{ClaimFixture, Fixture};
 
 struct FixedSigner;
 
-impl gix_store::Signer for FixedSigner {
+impl git_store::Signer for FixedSigner {
     type Error = std::convert::Infallible;
 
-    fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
-        Ok(gix_store::SignatureBytes::from(b"test-signature".to_vec()))
+    fn sign(&self, _bytes: &[u8]) -> Result<git_store::SignatureBytes, Self::Error> {
+        Ok(git_store::SignatureBytes::from(b"test-signature".to_vec()))
     }
 }
 
@@ -56,12 +56,12 @@ impl gix_store::Signer for FixedSigner {
 /// fixed output and asserts it is invoked at most once, per action key --
 /// the idempotence property `fire_run`'s replay case relies on.
 struct StubKiln {
-    output: gix_attest::Oid,
+    output: git_attest::Oid,
     calls: std::cell::Cell<u32>,
 }
 
 impl Executor for StubKiln {
-    fn run(&self, _key: &ActionKey) -> Result<gix_attest::Oid, ExecError> {
+    fn run(&self, _key: &ActionKey) -> Result<git_attest::Oid, ExecError> {
         self.calls.set(self.calls.get() + 1);
         Ok(self.output)
     }
@@ -104,7 +104,7 @@ fn the_chain_fires_end_to_end_and_stratification_proves_it_terminates() {
     let head = fixture.commit("first");
     let repo = fixture.open();
 
-    // `ClaimFixture` registers `gix-attest`'s own schemas and publishes a
+    // `ClaimFixture` registers `git-attest`'s own schemas and publishes a
     // real signing key -- needed here for real, not incidental, reasons:
     // "unverified claims contribute no facts" (`gix-query-host/src/claim.rs`),
     // so `release_on_green`'s `when` (`kind(C, action)`) only sees the action
@@ -156,7 +156,7 @@ fn the_chain_fires_end_to_end_and_stratification_proves_it_terminates() {
         output: gix::ObjectId::from_bytes_or_panic(&[0xaa; 20]).into(),
         calls: std::cell::Cell::new(0),
     };
-    let signer: gix_attest::Oid = claims_fixture.key_claim().into();
+    let signer: git_attest::Oid = claims_fixture.key_claim().into();
     let outcome1 = fire_run(
         &repo,
         &store,
@@ -199,7 +199,7 @@ fn the_chain_fires_end_to_end_and_stratification_proves_it_terminates() {
         params: Vec::<Param>::new(),
     };
     let target = git_effect::action_target(&action_key).unwrap();
-    let claims = gix_attest::Claims::open(&store);
+    let claims = git_attest::Claims::open(&store);
     let claim_ref = claims.reference(&target).unwrap();
     let claim_commit = repo
         .find_reference(claim_ref.as_str())
@@ -240,7 +240,7 @@ fn the_chain_fires_end_to_end_and_stratification_proves_it_terminates() {
     // unevaluated rule-language text).
     let effect_tree = effects.tree_hash(&effect2).unwrap();
     let head_oid = gix::ObjectId::from_hex(head.as_bytes()).unwrap();
-    let refs = gix_store::GixRefStore::new(&repo);
+    let refs = git_store::GixRefStore::new(&repo);
     let outcome2 = fire_advance(
         &repo,
         &refs,

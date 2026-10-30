@@ -1,9 +1,9 @@
 //! `claim/1`, `kind/2`, `target/2`, `signer/2`, `verdict/2` -- all five
-//! backed by `gix-attest`'s claim chains under `refs/claims/*`.
+//! backed by `git-attest`'s claim chains under `refs/claims/*`.
 //!
 //! A claim is a chained commit on `refs/claims/<target-key>`; its identity `C`
 //! is that commit's own oid, so no separate mapping is kept. What the claim
-//! says is its [`Envelope`] -- a `gix-store` document in the commit's tree --
+//! says is its [`Envelope`] -- a `git-store` document in the commit's tree --
 //! and the signature is an SSHSIG block in the commit's standard `gpgsig`
 //! header. Nothing here parses a commit message: the trailer-backed store this
 //! module used to be (`refs/meta/claims/*`, `Kind:`/`Target:`/`Signer:`
@@ -21,7 +21,7 @@
 //!
 //! Crypto-verified is still not *valid*. Validity is `key_valid_at` (a rule's
 //! predicate over op-log admission order, [`crate::cand::key_valid_at`]), and
-//! this module only refuses cryptographic garbage. `gix-attest`'s
+//! this module only refuses cryptographic garbage. `git-attest`'s
 //! [`Verdict`] has no `Valid` variant precisely so the two cannot be confused.
 //!
 //! # The relations, and where each column comes from
@@ -44,28 +44,28 @@
 //! Revocation needs no predicate of its own. A revocation *is* a claim, with
 //! `payload_kind = revocation` and its target naming the claim it revokes, so
 //! `kind(R, revocation), target(R, C)` already says "R revokes C" in the rule
-//! language. `gix-attest`'s structural mark ([`Claim::revoked_by`]) is the same
+//! language. `git-attest`'s structural mark ([`Claim::revoked_by`]) is the same
 //! fact read the other way round, and what a revocation *means* stays a rule's
 //! business.
 
-use gix::ObjectId;
-use gix_anchor::{REBIND_PIN_KIND, RebindPin};
-use gix_attest::{
+use git_anchor::{REBIND_PIN_KIND, RebindPin};
+use git_attest::{
     CLAIM_TARGET_KIND, Claim, Claims, Envelope, REVOCATION_KIND, Target, Verdict, target_key,
 };
+use git_store::RefSegment;
+use gix::ObjectId;
 use gix_query_ir::{Bindings, Fact, Facts, HostError, PredicateKey, Value};
-use gix_store::RefSegment;
 
 use crate::refs::HostRefs;
 use crate::util::{backend, backend_msg, fact, parse_oid, sym_oid};
 
-/// The store type every claim read in this crate goes through: `gix-store`'s
+/// The store type every claim read in this crate goes through: `git-store`'s
 /// generic `Store`, over [`HostRefs`] rather than the fixed `RepoStore` type
 /// alias -- `RepoStore<'r>` is `Store<GixRefStore<'r>, _>` specifically, and
 /// what makes [`crate::facts::RepoFacts::as_of`] reach claim reads at all is
 /// that this crate has exactly one ref-backed `Store` shape, parametrized by
 /// the same [`HostRefs`] `member.rs` and `anchor.rs` read through.
-type HostStore<'r> = gix_store::Store<HostRefs<'r>, &'r gix::OdbHandle>;
+type HostStore<'r> = git_store::Store<HostRefs<'r>, &'r gix::OdbHandle>;
 
 /// The [`Target::kind`] label a claim about an anchor carries.
 ///
@@ -93,11 +93,11 @@ const VERDICT_FIELD: &str = "verdict";
 /// chain's target from one of its claims means following revocation targets
 /// down to a claim that is not itself a revocation. A revocation of a
 /// revocation is legal and terminates; a cycle is not constructible by
-/// `gix-attest`'s writer but is constructible by hand, and an unbounded walk
+/// `git-attest`'s writer but is constructible by hand, and an unbounded walk
 /// over hand-written refs is a hang rather than a bad answer.
 const MAX_REVOCATION_HOPS: usize = 32;
 
-/// The claim chains of one repository, read through `gix-attest`.
+/// The claim chains of one repository, read through `git-attest`.
 ///
 /// A handle rather than free functions because every read needs the store,
 /// the store borrows the repository, and [`Claims`] borrows the store: three
@@ -111,13 +111,13 @@ struct ClaimReader<'r> {
 impl<'r> ClaimReader<'r> {
     /// Open `repo`'s claims over `refs`, live or as of an override set --
     /// [`crate::facts::RepoFacts::as_of`]'s reach into claim reads. The
-    /// layout is `gix-attest`'s own, which is what puts claim refs at
+    /// layout is `git-attest`'s own, which is what puts claim refs at
     /// `refs/claims/<target-key>`; naming it here rather than spelling the
     /// prefix keeps this crate from having a second opinion about where
     /// claims live.
     fn open(repo: &'r gix::Repository, refs: HostRefs<'r>, key: &PredicateKey) -> Self {
         Self {
-            store: gix_store::Store::with_layout(refs, &repo.objects, gix_attest::layout()),
+            store: git_store::Store::with_layout(refs, &repo.objects, git_attest::layout()),
             key: key.clone(),
         }
     }
@@ -128,7 +128,7 @@ impl<'r> ClaimReader<'r> {
 
     fn kind(
         &self,
-    ) -> gix_store::Kind<'_, gix_store::Typed<Envelope>, HostRefs<'r>, &'r gix::OdbHandle> {
+    ) -> git_store::Kind<'_, git_store::Typed<Envelope>, HostRefs<'r>, &'r gix::OdbHandle> {
         self.store.kind::<Envelope>(claim_segment())
     }
 
@@ -139,7 +139,7 @@ impl<'r> ClaimReader<'r> {
     /// `refs/claims/` -- and each chain is read whole through
     /// [`Claims::resolve`], because a claim's revocation lives on the same
     /// chain and re-deriving that structurally here would be a second opinion
-    /// about `gix-attest`'s own semantics.
+    /// about `git-attest`'s own semantics.
     fn all(&self) -> Result<Vec<(String, Claim)>, HostError> {
         let kind = self.kind();
         let claims = self.claims();
@@ -152,7 +152,7 @@ impl<'r> ClaimReader<'r> {
                 continue;
             };
             // A ref whose leaf is not the target key of the claims on it is
-            // not a claim ref `gix-attest` wrote; reading it as one would
+            // not a claim ref `git-attest` wrote; reading it as one would
             // invent a chain out of hand-placed refs.
             let derived = target_key(&target).map_err(|e| backend(&self.key, e))?;
             if name.to_string() != derived.to_string() {
@@ -287,10 +287,10 @@ impl<'r> ClaimReader<'r> {
     }
 }
 
-/// The store kind name claims are written under -- `gix-attest`'s own, so the
+/// The store kind name claims are written under -- `git-attest`'s own, so the
 /// ref layout is read from the crate that defines it.
 fn claim_segment() -> RefSegment {
-    RefSegment::new(gix_attest::CLAIM_KIND).expect("gix-attest's claim kind is a valid ref segment")
+    RefSegment::new(git_attest::CLAIM_KIND).expect("git-attest's claim kind is a valid ref segment")
 }
 
 /// One claim-attached two-place relation, and which part of a claim it reads.

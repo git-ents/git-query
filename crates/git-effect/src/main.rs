@@ -61,7 +61,7 @@ enum Command {
 ///
 /// `ARCHITECTURE.md` names the CLI surface (`git effect define <doc>`) but
 /// not a file format for `<doc>`; [`EffectDoc`] itself derives `Facet`
-/// (`gix-store`'s codec), not `serde`, because its stored shape is a git tree,
+/// (`git-store`'s codec), not `serde`, because its stored shape is a git tree,
 /// not a text file. TOML is this crate's own choice for the *input* file: it
 /// reads well for the doc's two multi-line rule-language bodies (`when`,
 /// `gate`) plus a short list (`writes`) and a small tagged union (`then`),
@@ -142,15 +142,15 @@ fn run(command: Command) -> anyhow::Result<()> {
     }
 }
 
-/// A [`gix_store::Signer`] that is never asked to sign anything: `status` and
+/// A [`git_store::Signer`] that is never asked to sign anything: `status` and
 /// `log` only read [`RecordStore`], and [`RecordStore::open`] takes a signer
 /// eagerly for writers to reuse, but a reader has nothing to sign.
 struct NeverSigner;
 
-impl gix_store::Signer for NeverSigner {
+impl git_store::Signer for NeverSigner {
     type Error = std::convert::Infallible;
 
-    fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
+    fn sign(&self, _bytes: &[u8]) -> Result<git_store::SignatureBytes, Self::Error> {
         unreachable!("`git effect status`/`log` never write, so this is never called")
     }
 }
@@ -296,10 +296,10 @@ mod tests {
             .unwrap();
 
         struct FixedSigner;
-        impl gix_store::Signer for FixedSigner {
+        impl git_store::Signer for FixedSigner {
             type Error = std::convert::Infallible;
-            fn sign(&self, _bytes: &[u8]) -> Result<gix_store::SignatureBytes, Self::Error> {
-                Ok(gix_store::SignatureBytes::from(b"sig".to_vec()))
+            fn sign(&self, _bytes: &[u8]) -> Result<git_store::SignatureBytes, Self::Error> {
+                Ok(git_store::SignatureBytes::from(b"sig".to_vec()))
             }
         }
         let records = RecordStore::open(&repo, FixedSigner).unwrap();

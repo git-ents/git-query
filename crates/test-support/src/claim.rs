@@ -1,12 +1,12 @@
-//! Signed claims in a fixture repository, written by `gix-attest` itself.
+//! Signed claims in a fixture repository, written by `git-attest` itself.
 //!
 //! Claims used to be commits with hand-written trailers, which a fixture could
 //! fake with `git commit -m`. They are not that any more: a claim is a chained
-//! commit on `refs/claims/<target-key>` whose tree is a `gix-store` document
+//! commit on `refs/claims/<target-key>` whose tree is a `git-store` document
 //! and whose signature is an SSHSIG block in the standard `gpgsig` header. A
 //! fixture that imitated that shape would be asserting our reader against our
 //! imitation, so this one writes claims through the real
-//! [`gix_attest::Claims`], with real signatures produced by shelling out to
+//! [`git_attest::Claims`], with real signatures produced by shelling out to
 //! `ssh-keygen -Y sign` -- git's own signing backend, and therefore the same
 //! bytes `git verify-commit` checks.
 //!
@@ -21,9 +21,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use facet::Facet;
+use git_attest::{AttestKey, Claim, Claims, Envelope, Target};
+use git_store::{RefSegment, RepoStore, SignatureBytes, Signer, schema_of};
 use gix::ObjectId;
-use gix_attest::{AttestKey, Claim, Claims, Envelope, Target};
-use gix_store::{RefSegment, RepoStore, SignatureBytes, Signer, schema_of};
 
 use crate::Fixture;
 
@@ -104,7 +104,7 @@ impl ClaimFixture {
             public,
         };
         let store = this.store();
-        gix_attest::register_schemas(&store).expect("register attest schemas");
+        git_attest::register_schemas(&store).expect("register attest schemas");
         let key_claim = Claims::open(&store)
             .add_key(&AttestKey::from_openssh(&this.public, false).expect("key material"))
             .expect("publish the signing key");
@@ -113,12 +113,12 @@ impl ClaimFixture {
 
     /// A signing store over the fixture's repository, in attest's own
     /// layout -- exposed so a consumer whose own write path drives
-    /// `gix-attest` directly (`git-effect`'s executor seam, D6) can sign real
+    /// `git-attest` directly (`git-effect`'s executor seam, D6) can sign real
     /// claims through it rather than re-deriving the `ssh-keygen` plumbing
     /// itself.
     #[must_use]
     pub fn store(&self) -> RepoStore<'_> {
-        RepoStore::open_with_layout(&self.repo, gix_attest::layout()).with_signer(SshKeygen {
+        RepoStore::open_with_layout(&self.repo, git_attest::layout()).with_signer(SshKeygen {
             key: self.key.clone(),
         })
     }
@@ -184,7 +184,7 @@ impl ClaimFixture {
     }
 
     /// The chain of claims on `target`, newest first, straight from
-    /// `gix-attest` -- the library oracle a re-backed claim EDB is asserted
+    /// `git-attest` -- the library oracle a re-backed claim EDB is asserted
     /// against.
     #[must_use]
     pub fn log(&self, target: &Target) -> Vec<Claim> {
