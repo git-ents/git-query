@@ -7,5 +7,5 @@
 # reproducibility should not be a function of what upstream landed this
 # morning. Bumping it is an ordinary change; bumping the Nemo pin is not.
 [toolchain]
-channel = "nightly-2026-07-23"
+channel = "nightly-2026-09-15"
 components = ["clippy", "rustfmt"]
